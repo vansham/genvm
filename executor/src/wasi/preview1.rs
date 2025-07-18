@@ -366,13 +366,13 @@ impl generated::wasi_snapshot_preview1::WasiSnapshotPreview1 for ContextVFS<'_> 
         _memory: &mut GuestMemory<'_>,
         id: generated::types::Clockid,
     ) -> Result<generated::types::Timestamp, generated::types::Error> {
-        panic!("todo")
+        Ok(1)
     }
 
     fn clock_time_get(
         &mut self,
         _memory: &mut GuestMemory<'_>,
-        id: generated::types::Clockid,
+        _id: generated::types::Clockid,
         _precision: generated::types::Timestamp,
     ) -> Result<generated::types::Timestamp, generated::types::Error> {
         Ok(self.context.unix_timestamp)
@@ -1131,7 +1131,7 @@ impl generated::wasi_snapshot_preview1::WasiSnapshotPreview1 for ContextVFS<'_> 
         events: GuestPtr<generated::types::Event>,
         nsubscriptions: generated::types::Size,
     ) -> Result<generated::types::Size, generated::types::Error> {
-        Err(generated::types::Errno::Io.into())
+        Err(generated::types::Errno::Notsup.into())
     }
 
     fn proc_exit(
@@ -1158,9 +1158,6 @@ impl generated::wasi_snapshot_preview1::WasiSnapshotPreview1 for ContextVFS<'_> 
         &mut self,
         _memory: &mut GuestMemory<'_>,
     ) -> Result<(), generated::types::Error> {
-        // No such thing in preview 2. Intentionally left empty.
-        //Ok(())
-
         Err(generated::types::Errno::Notsup.into())
     }
 

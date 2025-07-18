@@ -125,6 +125,26 @@ impl std::fmt::Debug for RunOk {
     }
 }
 
+fn detect_version_from_wasm(code: &[u8]) -> anyhow::Result<String> {
+    let parser = wasmparser::Parser::new(0);
+
+    for payload in parser.parse_all(code) {
+        match payload? {
+            wasmparser::Payload::CustomSection(section) if section.name() == "genvm.version" => {
+                let version = section.data().to_vec();
+                if let Ok(version_str) = str::from_utf8(&version) {
+                    return Ok(version_str.to_string());
+                } else {
+                    return Err(anyhow::anyhow!("Invalid UTF-8 in version section"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(anyhow::anyhow!("version section not found"))
+}
+
 #[derive(Clone)]
 pub struct WasmContext {
     genlayer_ctx: Arc<Mutex<wasi::Context>>,
@@ -379,31 +399,28 @@ impl Engines {
     pub fn create(config_base: impl FnOnce(&mut wasmtime::Config) -> Result<()>) -> Result<Self> {
         let mut base_conf = wasmtime::Config::default();
 
-        base_conf.debug_info(true);
-        base_conf.async_support(true);
-        //base_conf.cranelift_opt_level(wasmtime::OptLevel::Speed);
-        base_conf.wasm_tail_call(true);
-        base_conf.wasm_bulk_memory(true);
-        base_conf.wasm_relaxed_simd(false);
-        base_conf.wasm_simd(true);
-        base_conf.wasm_relaxed_simd(false);
+        base_conf
+            .debug_info(true)
+            .wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Disable)
+            .async_support(true)
+            .consume_fuel(false)
+            .cranelift_opt_level(wasmtime::OptLevel::None);
+
+        base_conf
+            .wasm_tail_call(true)
+            .wasm_bulk_memory(true)
+            .wasm_simd(false)
+            .relaxed_simd_deterministic(true)
+            .wasm_relaxed_simd(false);
 
         base_conf
             .wasm_feature(WasmFeatures::BULK_MEMORY, true)
-            .wasm_feature(WasmFeatures::REFERENCE_TYPES, false)
             .wasm_feature(WasmFeatures::SIGN_EXTENSION, true)
             .wasm_feature(WasmFeatures::MUTABLE_GLOBAL, true)
+            .wasm_feature(WasmFeatures::MULTI_VALUE, true)
             .wasm_feature(WasmFeatures::SATURATING_FLOAT_TO_INT, false)
-            .wasm_feature(WasmFeatures::MULTI_VALUE, true);
+            .wasm_feature(WasmFeatures::REFERENCE_TYPES, false);
 
-        base_conf.consume_fuel(false);
-        //base_conf.wasm_threads(false);
-        //base_conf.wasm_reference_types(false);
-        base_conf.wasm_simd(false);
-        base_conf.relaxed_simd_deterministic(false);
-        base_conf.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Disable);
-
-        base_conf.cranelift_opt_level(wasmtime::OptLevel::None);
         config_base(&mut base_conf)?;
 
         let mut det_conf = base_conf.clone();
@@ -890,9 +907,16 @@ impl Supervisor {
         }
 
         if wasmparser::Parser::is_core_wasm(code.as_ref()) {
+            let version = match detect_version_from_wasm(code.as_ref()) {
+                Ok(v) => v,
+                Err(e) => {
+                    log_warn!(default = public_abi::ABSENT_VERSION, error = e; "could not detect version from wasm");
+                    public_abi::ABSENT_VERSION.to_string()
+                }
+            };
             return Ok(Archive::from_file_and_runner(
                 code,
-                SharedBytes::from(b"v0.0.1".as_ref()),
+                SharedBytes::from(version.as_bytes()),
                 SharedBytes::from(b"{ \"StartWasm\": \"file\" }".as_ref()),
             ));
         }

@@ -96,7 +96,10 @@ def run(jsonnet_rel_path):
 	if not isinstance(jsonnet_conf, list):
 		jsonnet_conf = [jsonnet_conf]
 
-	jsonnet_conf = unfold_conf(jsonnet_conf, {'jsonnetDir': str(jsonnet_path.parent)})
+	jsonnet_conf = unfold_conf(
+		jsonnet_conf,
+		{'jsonnetDir': str(jsonnet_path.parent), 'fileBaseName': jsonnet_path.stem},
+	)
 
 	seq_tmp_dir = root_tmp_dir.joinpath(jsonnet_rel_path).with_suffix('')
 
@@ -124,7 +127,9 @@ def run(jsonnet_rel_path):
 		addr = base64.b64decode(addr)
 		if code.endswith('.wat'):
 			out_path = seq_tmp_dir.joinpath(Path(code).with_suffix('.wasm').name)
-			subprocess.run(['wat2wasm', '-o', out_path, code], check=True)
+			subprocess.run(
+				['wat2wasm', '--enable-annotations', '-o', out_path, code], check=True
+			)
 			code = out_path
 		else:
 			code = Path(code)
@@ -160,7 +165,9 @@ def run(jsonnet_rel_path):
 				continue
 			if code_path.endswith('.wat'):
 				out_path = my_tmp_dir.joinpath(Path(code_path).with_suffix('.wasm').name)
-				subprocess.run(['wat2wasm', '-o', out_path, code_path], check=True)
+				subprocess.run(
+					['wat2wasm', '--enable-annotations', '-o', out_path, code_path], check=True
+				)
 				acc_val['code'] = str(out_path)
 
 		calldata_bytes = calldata.encode(
