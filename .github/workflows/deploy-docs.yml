@@ -54,7 +54,7 @@ jobs:
             pushd doc/website/ && \
             poetry install --no-root && \
             popd && \
-            ya-build config && \
+            ruby ./tools/ya-build/ya-build config && \
             ninja -v -C build genvm/docs
           '
 
