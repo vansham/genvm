@@ -50,26 +50,31 @@ Time and Randomness Control
 Regular system interface
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Virtual File System (VFS)**:
+.. _gvm-def-vfs:
 
-  -  Isolated file system namespace per contract execution
-  -  Memory-based file system for deterministic behavior
-  -  Read-only access to runtime libraries and dependencies
-  -  Controlled file system state for reproducible execution
+Virtual File System
+^^^^^^^^^^^^^^^^^^^
 
--  **Environment Variables**:
+-  Isolated file system namespace per contract execution
+-  Memory-based file system for deterministic behavior
+-  Read-only access to runtime libraries and dependencies
+-  Controlled file system state for reproducible execution
 
-   -  Controlled environment variable access
-   -  Deterministic environment setup
-   -  Security filtering of sensitive variables
-   -  Standardized locale and language settings
+Environment Variables
+^^^^^^^^^^^^^^^^^^^^^
 
--  **Command Line Arguments**:
+-  Controlled environment variable access
+-  Deterministic environment setup
+-  Security filtering of sensitive variables
+-  Standardized locale and language settings
 
-   -  Controlled argument passing to WebAssembly modules
-   -  Deterministic argument parsing and validation
-   -  Security filtering of dangerous arguments
-   -  Standardized argument format and encoding
+Command Line Arguments
+^^^^^^^^^^^^^^^^^^^^^^
+
+-  Controlled argument passing to WebAssembly modules
+-  Deterministic argument parsing and validation
+-  Security filtering of dangerous arguments
+-  Standardized argument format and encoding
 
 WASI Specification Compliance
 -----------------------------
@@ -130,7 +135,7 @@ Functions
 ``random_get`` Function
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Deterministic mode: mt19937 that is initialized with ``GenLayer`` as ascii bytes
+Deterministic mode: mt19937 that is initialized with ``GenLayer`` as 8 ascii octets.
 
 Non-deterministic mode: cryptographically secure random number generator,
 with optional fallback to pseudo-random numbers, if secure source is exhausted or unavailable.
@@ -234,7 +239,7 @@ Initial State
 - :term:`FD` 2 is ``stderr``
 - :term:`FD` 3 is directory ``/`` (file system root)
 
-.. _Fd Allocation and Deallocation:
+.. _gvm-def-fd-allocation:
 
 :ref:`gvm-def-det-mode` :term:`FD` Allocation and Deallocation
 --------------------------------------------------------------

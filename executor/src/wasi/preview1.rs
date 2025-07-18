@@ -21,6 +21,7 @@ pub struct Context {
     unix_timestamp: u64,
 
     conf: base::Config,
+    mt19937_rng: mt19937::MT19937,
 }
 
 pub struct ContextVFS<'a> {
@@ -272,6 +273,9 @@ where
 
 impl Context {
     pub fn new(datetime: chrono::DateTime<chrono::Utc>, conf: base::Config) -> Self {
+        const SEED_ARR: [u32; 2] = [u32::from_le_bytes(*b"GenL"), u32::from_le_bytes(*b"ayer")];
+        let seed = mt19937::MT19937::new_with_slice_seed(&SEED_ARR);
+
         Self {
             args_buf: Vec::new(),
             args_offsets: Vec::new(),
@@ -283,6 +287,7 @@ impl Context {
             unix_timestamp: datetime.timestamp() as u64 * 1_000_000_000
                 + datetime.timestamp_subsec_nanos() as u64,
             conf,
+            mt19937_rng: seed,
         }
     }
 }
@@ -1170,7 +1175,12 @@ impl generated::wasi_snapshot_preview1::WasiSnapshotPreview1 for ContextVFS<'_> 
     ) -> Result<(), generated::types::Error> {
         let mut mem: Vec<u8> = std::iter::repeat_n(0, usize::try_from(buf_len).unwrap()).collect();
 
-        if !self.context.conf.is_deterministic {
+        if self.context.conf.is_deterministic {
+            use rand_core::RngCore as _;
+
+            self.context.mt19937_rng.fill_bytes(&mut mem[..]);
+        } else {
+            // Non-deterministic mode: cryptographically secure random number generator
             if let Err(e) = getrandom::fill(&mut mem) {
                 log_error!(error:err = e; "random failed");
             }

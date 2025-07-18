@@ -64,11 +64,16 @@
 							ninja
 							ruby
 
+							xz
+							zlib
+							glibc
+
 							mermaid-cli
 						];
 
 						shellHook = ''
 							export PATH="$(pwd)/tools/ya-build:$(pwd)/tools/git-third-party:$PATH"
+							export LD_LIBRARY_PATH="${toString pkgs.xz.out}/lib:${toString pkgs.zlib.out}/lib:${toString pkgs.glibc}/lib:$LD_LIBRARY_PATH"
 						'';
 					};
 				}

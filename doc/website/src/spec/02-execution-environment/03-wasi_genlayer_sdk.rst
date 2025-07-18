@@ -52,23 +52,6 @@ Interface Definition
    __attribute__((import_module("genlayer_sdk"))) uint32_t
    gl_call(char const* request, uint32_t request_len, uint32_t* result_fd);
 
-WebAssembly Integration
-~~~~~~~~~~~~~~~~~~~~~~~
-
--  **Import Namespace**:
-
-   -  Functions exposed under ``genlayer_sdk`` namespace
-   -  Type-safe function signatures with WebAssembly validation
-   -  Consistent error handling and return value patterns
-
--  **Data Serialization**:
-
-   -  :ref:`gvm-def-calldata-encoding` for complex data structures
-   -  Efficient binary encoding for blockchain primitives
-   -  Cross-language type compatibility
-   -  Deterministic serialization for consensus
-   -  Safe decoding
-
 Backwards Compatibility
 -----------------------
 
@@ -77,77 +60,225 @@ Passing data that turned out to be compatible with future version
 is filtered out by version limitation. And will result in ``error_inval``
 if method wasn't available at given version
 
-Function Descriptions
----------------------
-
-``gl_call``
-~~~~~~~~~~~
+Functions
+---------
 
 ``storage_read``
 ~~~~~~~~~~~~~~~~
 
 Reads data from contract storage at the specified slot and index.
 
-**Parameters:**
-- ``slot``: Storage slot identifier (32 bytes)
-- ``index``: Byte offset within the slot (u32)
-- ``buf``: Buffer to read data into
-- ``buf_len``: Length of the buffer (u32)
+Requirements
+^^^^^^^^^^^^
 
-**Returns:** Error code (0 for success)
-
-**Requirements:**
-- Contract must be in deterministic mode
-- Contract must have read storage permission
-- Index + buf_len must not overflow
+#. :def:`Sub-VM` must be in deterministic mode
+#. :def:`Sub-VM` must have read storage permission
+#. index + buf_len must not overflow
 
 ``storage_write``
 ~~~~~~~~~~~~~~~~~
 
 Writes data to contract storage at the specified slot and index.
 
-**Parameters:**
-- ``slot``: Storage slot identifier (32 bytes)
-- ``index``: Byte offset within the slot (u32)
-- ``buf``: Buffer containing data to write
-- ``buf_len``: Length of the data to write (u32)
+Requirements
+^^^^^^^^^^^^
 
-**Returns:** Error code (0 for success)
-
-**Requirements:**
-- Contract must be in deterministic mode
-- Contract must have write storage permission
-- Index + buf_len must not overflow
-- Storage slot must not be locked, unless the sender is in ``upgraders``
+#. :def:`Sub-VM` must be in deterministic mode
+#. :def:`Sub-VM` must have write storage permission
+#. index + buf_len must not overflow
+#. :def:`Sub-VM` Storage slot must not be locked, unless the sender is in ``upgraders``
 
 ``get_balance``
 ~~~~~~~~~~~~~~~
 
 Queries the balance of a specified contract address.
 
-**Parameters:**
-- ``address``: Contract address (20 bytes)
-- ``result``: Buffer to store the balance result (32 bytes, little-endian)
-
-**Returns:** Error code (0 for success)
-
-**Behavior:**
-- Returns the current balance of the specified address
-- Balance is returned as a 32-byte little-endian encoded value
+Result value is a 32 octets long little-endian unsigned integer
 
 ``get_self_balance``
 ~~~~~~~~~~~~~~~~~~~~
 
 Gets the current contract's balance, adjusted for the current transaction context.
+It is following: balance_before_transaction + message.value - value_consumed_by_current_tx
 
-**Parameters:**
-- ``result``: Buffer to store the balance result (32 bytes, little-endian)
+Result value is a 32 octets long little-endian unsigned integer
 
-**Returns:** Error code (0 for success)
+Requirements
+^^^^^^^^^^^^
 
-**Requirements:**
 - Contract must be in deterministic mode
 
-**Behavior:**
-- Returns: balance_before_transaction + message.value - value_consumed_by_current_tx
-- Balance is returned as a 32-byte little-endian encoded value
+``gl_call``
+~~~~~~~~~~~
+
+Primary GenLayer WASI SDK function handling most intelligent contract operations.
+Takes serialized :ref:`Calldata Encoded <gvm-def-calldata-encoding>` message buffer
+and dispatches to various blockchain operations based on message type.
+
+Parameters: ``request`` (calldata buffer), ``request_len`` (buffer length), ``result_fd`` (output file descriptor)
+
+Returns
+
+- ``error_success`` on success
+- ``error_inval`` for invalid requests
+- ``error_forbidden`` for permission violations
+- ``error_inbalance`` for insufficient balance
+
+``gl_call`` Functions
+---------------------
+
+``EthSend`` Message
+~~~~~~~~~~~~~~~~~~~
+
+Sends transaction to Ethereum address with optional value transfer.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-det-mode` execution
+#. ``can_send_messages`` permission
+#. Sufficient contract balance for value transfer
+
+``EthCall`` Message
+~~~~~~~~~~~~~~~~~~~
+
+Calls Ethereum contract method (read-only operation).
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-det-mode` execution
+#. ``can_call_others`` permission
+
+``CallContract`` Message
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Calls another GenLayer Intelligent Contract.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-det-mode` execution
+#. ``can_call_others`` permission
+
+Creates new :term:`sub-VM` instance for contract execution. Inherits sender permissions but disables ``write_storage``.
+
+``PostMessage`` Message
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Posts message to GenLayer contract for later execution.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-det-mode` execution
+#. ``can_send_messages`` permission
+#. Sufficient contract balance for value transfer
+
+``DeployContract`` Message
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Deploys new intelligent contract to blockchain.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-det-mode` execution
+#. ``can_send_messages`` permission
+#. Sufficient contract balance for value transfer
+
+Supports CREATE2-style deployment with salt nonce for deterministic addressing.
+
+``RunNondet`` Message
+~~~~~~~~~~~~~~~~~~~~~
+
+Executes non-deterministic code with leader/validator consensus.
+Creates :ref:`gvm-def-non-det-mode` VM instance with restricted permissions.
+See :doc:`../03-vm/04-determinism-mode-switching` for more details.
+
+Requirements
+^^^^^^^^^^^^
+
+#. ``can_spawn_nondet`` permission
+
+``Sandbox`` Message
+~~~~~~~~~~~~~~~~~~~
+
+Executes code in sandboxed environment with restricted permissions.
+
+Creates isolated VM instance. Inherits :ref:`gvm-def-det-mode` from parent. Disables storage read access and ``spawn_nondet``/``call_others`` permissions.
+
+``WebRender`` Message
+~~~~~~~~~~~~~~~~~~~~~
+
+Renders web content using GenVM web module.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-non-det-mode` execution
+#. Web module availability
+
+``WebRequest`` Message
+~~~~~~~~~~~~~~~~~~~~~~
+
+Makes HTTP requests using GenVM web module.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-non-det-mode` execution
+#. Web module availability
+
+``ExecPrompt`` Message
+~~~~~~~~~~~~~~~~~~~~~~
+
+Executes LLM prompts using GenVM LLM module.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-non-det-mode` execution
+#. LLM module availability
+
+Supports up to 2 images per prompt. Consumes fuel based on LLM usage.
+
+``ExecPromptTemplate`` Message
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Executes structured LLM prompt templates with type-specific validation.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-non-det-mode` execution
+#. LLM module availability
+
+Comparative templates expect boolean responses. Non-comparative templates expect text responses.
+
+``EmitEvent`` Message
+~~~~~~~~~~~~~~~~~~~~~
+
+Emits blockchain events with topics and data.
+
+Requirements
+^^^^^^^^^^^^
+
+#. :ref:`gvm-def-det-mode` execution
+#. GenVM version 0.1.5 or higher
+
+Topics must be exactly 32 bytes each.
+
+``Rollback`` Message
+~~~~~~~~~~~~~~~~~~~~
+
+Triggers contract rollback with custom error message.
+
+Causes VM to exit with ``UserError``. Terminates contract execution immediately.
+
+``Return`` Message
+~~~~~~~~~~~~~~~~~~
+
+Returns value from contract execution and terminates.
+
+Causes VM to exit with ``ContractReturn``. Encodes return value using :ref:`Calldata Encoded <gvm-def-calldata-encoding>` format.

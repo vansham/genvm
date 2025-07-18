@@ -124,6 +124,7 @@ impl TryFrom<u8> for EntryKind {
 pub enum MemoryLimiterConsts {
     TableEntry = 64,
     FileMapping = 256,
+    FdAllocation = 96,
 }
 
 impl MemoryLimiterConsts {
@@ -131,12 +132,14 @@ impl MemoryLimiterConsts {
         match self {
             MemoryLimiterConsts::TableEntry => 64,
             MemoryLimiterConsts::FileMapping => 256,
+            MemoryLimiterConsts::FdAllocation => 96,
         }
     }
     pub fn str_snake_case(self) -> &'static str {
         match self {
             MemoryLimiterConsts::TableEntry => "table_entry",
             MemoryLimiterConsts::FileMapping => "file_mapping",
+            MemoryLimiterConsts::FdAllocation => "fd_allocation",
         }
     }
 }
@@ -148,6 +151,7 @@ impl TryFrom<u32> for MemoryLimiterConsts {
         match value {
             64 => Ok(MemoryLimiterConsts::TableEntry),
             256 => Ok(MemoryLimiterConsts::FileMapping),
+            96 => Ok(MemoryLimiterConsts::FdAllocation),
             _ => Err(()),
         }
     }
@@ -187,6 +191,7 @@ impl TryFrom<&str> for SpecialMethod {
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum VmError {
     Timeout,
+    ExitCode,
     ValidatorDisagrees,
     VersionTooBig,
     Oom,
@@ -197,6 +202,7 @@ impl VmError {
     pub fn value(self) -> &'static str {
         match self {
             VmError::Timeout => "timeout",
+            VmError::ExitCode => "exit_code",
             VmError::ValidatorDisagrees => "validator_disagrees",
             VmError::VersionTooBig => "version_too_big",
             VmError::Oom => "OOM",
@@ -206,6 +212,7 @@ impl VmError {
     pub fn str_snake_case(self) -> &'static str {
         match self {
             VmError::Timeout => "timeout",
+            VmError::ExitCode => "exit_code",
             VmError::ValidatorDisagrees => "validator_disagrees",
             VmError::VersionTooBig => "version_too_big",
             VmError::Oom => "oom",
@@ -220,6 +227,7 @@ impl TryFrom<&str> for VmError {
     fn try_from(value: &str) -> Result<Self, ()> {
         match value {
             "timeout" => Ok(VmError::Timeout),
+            "exit_code" => Ok(VmError::ExitCode),
             "validator_disagrees" => Ok(VmError::ValidatorDisagrees),
             "version_too_big" => Ok(VmError::VersionTooBig),
             "OOM" => Ok(VmError::Oom),
