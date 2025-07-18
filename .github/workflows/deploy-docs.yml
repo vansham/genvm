@@ -50,14 +50,13 @@ jobs:
 
       - name: Build
         run: |
-          nix develop ./build-scripts/devenv#docs
-
-          pushd doc/website/ && \
-          poetry install --no-root && \
-          popd
-
-          ya-build config
-          ninja -v -C build genvm/docs
+          nix develop ./build-scripts/devenv#docs --command bash -c '
+            pushd doc/website/ && \
+            poetry install --no-root && \
+            popd && \
+            ya-build config && \
+            ninja -v -C build genvm/docs
+          '
 
       - name: Checkout target repository
         uses: actions/checkout@v4
