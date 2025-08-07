@@ -46,7 +46,7 @@ class DeployDefaultTransactionData(DefaultTransactionData):
 
 class IHost(metaclass=abc.ABCMeta):
 	@abc.abstractmethod
-	async def loop_enter(self) -> socket.socket: ...
+	async def loop_enter(self, cancellation: asyncio.Event) -> socket.socket: ...
 
 	@abc.abstractmethod
 	async def get_calldata(self, /) -> bytes: ...
@@ -101,6 +101,8 @@ class IHost(metaclass=abc.ABCMeta):
 	async def remaining_fuel_as_gen(self, /) -> int: ...
 	@abc.abstractmethod
 	async def post_event(self, topics: list[bytes], blob: bytes, /) -> None: ...
+	@abc.abstractmethod
+	async def notify_nondet_disagreement(self, call_no: int, /) -> None: ...
 
 
 def save_code_callback[T](
@@ -125,10 +127,10 @@ async def save_code_to_host(host: IHost, code: bytes):
 	await r2
 
 
-async def host_loop(handler: IHost):
+async def host_loop(handler: IHost, cancellation: asyncio.Event):
 	async_loop = asyncio.get_event_loop()
 
-	sock = await handler.loop_enter()
+	sock = await handler.loop_enter(cancellation)
 
 	async def send_all(data: collections.abc.Buffer):
 		await async_loop.sock_sendall(sock, data)
@@ -312,6 +314,10 @@ async def host_loop(handler: IHost):
 					await send_all(bytes([e.error_code]))
 				else:
 					await send_all(bytes([Errors.OK]))
+			case Methods.NOTIFY_NONDET_DISAGREEMENT:
+				call_no = await recv_int()
+				await handler.notify_nondet_disagreement(call_no)
+				# No response needed according to the spec
 			case x:
 				raise Exception(f'unknown method {x}')
 
@@ -375,6 +381,8 @@ async def run_host_and_program(
 				if read is None or len(read) == 0:
 					break
 				put_to.append(read)
+
+				# print(program, read)
 		finally:
 			try:
 				transport.close()
@@ -384,18 +392,23 @@ async def run_host_and_program(
 
 	stdout, stderr, genvm_log = [], [], []
 
+	cancellation_event = asyncio.Event()
+
 	async def wrap_proc():
-		await asyncio.gather(
-			read_whole(stdout_reader, stdout_transport, stdout),
-			read_whole(stderr_reader, stderr_transport, stderr),
-			read_whole(genvm_log_reader, genvm_log_transport, genvm_log),
-			process.wait(),
-		)
+		try:
+			await asyncio.gather(
+				read_whole(stdout_reader, stdout_transport, stdout),
+				read_whole(stderr_reader, stderr_transport, stderr),
+				read_whole(genvm_log_reader, genvm_log_transport, genvm_log),
+				process.wait(),
+			)
+		finally:
+			cancellation_event.set()
 
 	coro_proc = asyncio.ensure_future(wrap_proc())
 
 	async def wrap_host():
-		await host_loop(handler)
+		await host_loop(handler, cancellation_event)
 
 	coro_loop = asyncio.ensure_future(wrap_host())
 

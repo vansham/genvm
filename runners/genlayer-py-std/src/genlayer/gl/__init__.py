@@ -80,7 +80,7 @@ else:
 
 from .genvm_contracts import *
 from .annotations import *
-from .msg import MessageRawType, message_raw as _message_raw_original
+from genlayer._internal.msg import MessageRawType, message_raw as _message_raw_original
 
 
 class MessageType(typing.NamedTuple):
@@ -101,6 +101,31 @@ class MessageType(typing.NamedTuple):
 	"""
 	Current chain ID
 	"""
+
+
+def trace(*objs: typing.Any, sep: str = ' '):
+	wasi.gl_call(
+		calldata.encode(
+			{
+				'Trace': {
+					'Message': sep.join(str(obj) for obj in objs),
+				},
+			}
+		)
+	)
+
+
+def trace_time_micro() -> int:
+	import genlayer.gl._internal.gl_call as gl_call
+
+	return gl_call.gl_call_generic(
+		{
+			'Trace': {
+				'RuntimeMicroSec': None,
+			},
+		},
+		lambda x: typing.cast(int, calldata.decode(x)),
+	).get()
 
 
 if os.getenv('GENERATING_DOCS', 'false') == 'true':

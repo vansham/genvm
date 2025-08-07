@@ -25,6 +25,7 @@ pytest-cov = "^6.0.0"
 sentence-transformers = "^3.2.1"
 eth-abi = "^5.2.0"
 python-afl = "^0.7.3"
+numpy = "^2.3.1"
 
 [build-system]
 requires = ["poetry-core"]
@@ -34,4 +35,4 @@ build-backend = "poetry.core.masonry.api"
 testpaths = [
     "tests",
 ]
-addopts = "--cov=src/genlayer/py --cov-report term-missing --cov-fail-under=75"
+addopts = "--cov=src/genlayer/py --cov=src-emb/genlayer_embeddings/ --cov-report term-missing --cov-fail-under=75"

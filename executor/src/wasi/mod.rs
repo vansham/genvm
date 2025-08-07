@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
-use crate::{calldata, vm};
+use crate::{calldata, rt};
 
 pub mod base;
-mod common;
 pub mod genlayer_sdk;
-mod gl_call;
 pub mod preview1;
+pub mod vfs;
+
+mod common;
+mod gl_call;
 
 pub struct Context {
-    vfs: common::VFS,
+    vfs: vfs::VFS,
     pub preview1: preview1::Context,
     pub genlayer_sdk: genlayer_sdk::Context,
 }
@@ -17,14 +19,15 @@ pub struct Context {
 impl Context {
     pub fn new(
         data: genlayer_sdk::SingleVMData,
-        shared_data: Arc<vm::SharedData>,
+        shared_data: Arc<rt::supervisor::Supervisor>,
     ) -> anyhow::Result<Self> {
         let as_value = calldata::to_value(&data.message_data)?;
         let as_bytes = calldata::encode(&as_value);
+        let limiter = shared_data.limiter.get(data.conf.is_deterministic).clone();
         Ok(Self {
-            vfs: common::VFS::new(as_bytes),
+            vfs: vfs::VFS::new(as_bytes, limiter),
             preview1: preview1::Context::new(data.message_data.datetime, data.conf),
-            genlayer_sdk: genlayer_sdk::Context::new(data, shared_data),
+            genlayer_sdk: genlayer_sdk::Context::new(data),
         })
     }
 }
@@ -111,7 +114,6 @@ fn add_to_linker_sync_dlsym<T: Send + 'static>(
 
 pub(super) fn add_to_linker_sync<T: Send + 'static>(
     linker: &mut wasmtime::Linker<T>,
-    _linker_shared: Arc<tokio::sync::Mutex<wasmtime::Linker<T>>>,
     f: impl Fn(&mut T) -> &mut Context + Copy + Send + Sync + 'static,
 ) -> anyhow::Result<()> {
     #[derive(Clone, Copy)]

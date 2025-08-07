@@ -21,6 +21,13 @@ pub struct Module {
     imp: tokio::sync::Mutex<ModuleImpl>,
     cookie: String,
     host_data: genvm_modules_interfaces::HostData,
+    metrics: sync::DArc<Metrics>,
+}
+
+#[derive(Default, Debug, serde::Serialize)]
+pub struct Metrics {
+    pub calls: genvm_common::stats::metric::Count,
+    pub time: stats::metric::Time,
 }
 
 async fn read_handling_pings(stream: &mut WSStream) -> anyhow::Result<Bytes> {
@@ -53,6 +60,7 @@ impl Module {
         cancellation: Arc<genvm_common::cancellation::Token>,
         cookie: String,
         host_data: genvm_modules_interfaces::HostData,
+        metrics: sync::DArc<Metrics>,
     ) -> Self {
         Self {
             imp: tokio::sync::Mutex::new(ModuleImpl { url, stream: None }),
@@ -60,6 +68,7 @@ impl Module {
             cookie,
             name,
             host_data,
+            metrics,
         }
     }
 
@@ -80,10 +89,17 @@ impl Module {
         V: serde::Serialize,
         R: serde::Serialize + serde::de::DeserializeOwned,
     {
-        let mut zelf = self.imp.lock().await;
+        self.metrics.calls.increment();
+
+        let zelf = self.imp.lock().await;
+
+        let mut zelf = sync::Lock::new(
+            zelf,
+            stats::tracker::Time::new(self.metrics.gep(|x| &x.time)),
+        );
 
         if zelf.stream.is_none() {
-            log_info!(url = zelf.url, name = self.name; "initializing connection to module");
+            log_debug!(url = zelf.url, name = self.name; "initializing connection to module");
 
             let (mut ws_stream, _) = tokio_tungstenite::connect_async(&zelf.url)
                 .await
@@ -97,6 +113,8 @@ impl Module {
             ws_stream
                 .send(Message::Binary(calldata::encode(&msg).into()))
                 .await?;
+
+            log_debug!(name = self.name; "connection to module initialized");
 
             zelf.stream = Some(ws_stream);
         }
@@ -128,6 +146,28 @@ impl Module {
         }
     }
 
+    pub async fn get_stats<V>(&self, val: V) -> anyhow::Result<calldata::Value>
+    where
+        V: serde::Serialize,
+    {
+        let zelf = self.imp.lock().await;
+        let mut zelf = sync::Lock::new(zelf, self.metrics.gep(|x| &x.time));
+
+        match &mut zelf.stream {
+            None => Ok(calldata::Value::Null),
+            Some(stream) => {
+                let val = calldata::to_value(&val)?;
+                let payload = calldata::encode(&val);
+                stream.send(Message::Binary(payload.into())).await?;
+                let response = read_handling_pings(stream).await?;
+
+                let response = calldata::decode(&response)?;
+
+                Ok(response)
+            }
+        }
+    }
+
     pub async fn send<R, V>(&self, val: V) -> anyhow::Result<std::result::Result<R, GenericValue>>
     where
         V: serde::Serialize,
@@ -142,4 +182,9 @@ impl Module {
             }
         }
     }
+}
+
+pub struct All {
+    pub web: Arc<Module>,
+    pub llm: Arc<Module>,
 }

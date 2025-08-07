@@ -7,15 +7,9 @@ use genvm_modules_interfaces::GenericValue;
 use wiggle::GuestError;
 
 use crate::host::SlotID;
-use crate::{
-    calldata,
-    errors::*,
-    ustar::SharedBytes,
-    vm::{self, RunOk},
-};
-use crate::{errors, public_abi};
+use crate::{calldata, public_abi, rt};
 
-use super::{base, common::*, gl_call};
+use super::{base, gl_call, vfs};
 
 fn entry_kind_as_int<S>(data: &public_abi::EntryKind, d: S) -> Result<S::Ok, S::Error>
 where
@@ -25,15 +19,18 @@ where
 }
 
 #[derive(serde::Serialize, Debug)]
-pub struct TransformedMessage {
+pub struct ExtendedMessage {
     pub contract_address: calldata::Address,
     pub sender_address: calldata::Address,
     pub origin_address: calldata::Address,
+    /// View methods call chain.
+    /// It is empty for entrypoint (refer to [`contract_address`])
     pub stack: Vec<calldata::Address>,
 
     pub chain_id: num_bigint::BigInt,
     pub value: num_bigint::BigInt,
     pub is_init: bool,
+    /// Transaction timestamp
     pub datetime: chrono::DateTime<chrono::Utc>,
 
     #[serde(serialize_with = "entry_kind_as_int")]
@@ -48,12 +45,12 @@ fn default_entry_stage_data() -> calldata::Value {
     calldata::Value::Null
 }
 
-impl TransformedMessage {
+impl ExtendedMessage {
     pub fn fork_leader(
         &self,
         entry_kind: public_abi::EntryKind,
         entry_data: Vec<u8>,
-        entry_leader_data: Option<RunOk>,
+        entry_leader_data: Option<rt::vm::RunOk>,
     ) -> Self {
         let entry_leader_data = match entry_leader_data {
             None => default_entry_stage_data(),
@@ -63,7 +60,7 @@ impl TransformedMessage {
             )])),
         };
 
-        TransformedMessage {
+        ExtendedMessage {
             contract_address: self.contract_address,
             sender_address: self.sender_address,
             origin_address: self.origin_address,
@@ -85,19 +82,22 @@ impl TransformedMessage {
 
 pub struct SingleVMData {
     pub conf: base::Config,
-    pub message_data: TransformedMessage,
-    pub supervisor: Arc<tokio::sync::Mutex<crate::vm::Supervisor>>,
+    pub message_data: ExtendedMessage,
+    pub supervisor: Arc<rt::supervisor::Supervisor>,
     pub version: genvm_common::version::Version,
+    pub should_capture_fp: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct Context {
     pub data: SingleVMData,
-    pub shared_data: Arc<vm::SharedData>,
     pub messages_decremented: primitive_types::U256,
+
+    pub start_time: std::time::Instant,
+    pub prev_time: std::time::Instant,
 }
 
 pub struct ContextVFS<'a> {
-    pub(super) vfs: &'a mut VFS,
+    pub(super) vfs: &'a mut vfs::VFS,
     pub(super) context: &'a mut Context,
 }
 
@@ -168,11 +168,14 @@ fn read_owned_vec(
 }
 
 impl Context {
-    pub fn new(data: SingleVMData, shared_data: Arc<vm::SharedData>) -> Self {
+    pub fn new(data: SingleVMData) -> Self {
+        let now = std::time::Instant::now();
+
         Self {
             data,
-            shared_data,
             messages_decremented: primitive_types::U256::zero(),
+            start_time: now,
+            prev_time: now,
         }
     }
 }
@@ -266,20 +269,28 @@ impl From<serde_json::Error> for generated::types::Error {
 impl ContextVFS<'_> {
     fn set_vm_run_result(
         &mut self,
-        data: vm::RunOk,
+        data: rt::vm::RunOk,
     ) -> Result<(generated::types::Fd, usize), generated::types::Error> {
         let data = match data {
-            RunOk::VMError(e, cause) => {
-                return Err(generated::types::Error::trap(VMError(e, cause).into()))
+            rt::vm::RunOk::VMError(e, cause) => {
+                return Err(generated::types::Error::trap(
+                    rt::errors::VMError(e, cause).into(),
+                ))
             }
             data => data,
         };
         let data: Box<[u8]> = data.as_bytes_iter().collect();
         let len = data.len();
         Ok((
-            generated::types::Fd::from(self.vfs.place_content(
-                FileContentsUnevaluated::from_contents(SharedBytes::new(data), 0),
-            )),
+            generated::types::Fd::from(
+                self.vfs
+                    .place_content(vfs::FileContents {
+                        contents: util::SharedBytes::new(data),
+                        pos: 0,
+                        release_memory: true,
+                    })
+                    .map_err(generated::types::Error::trap)?,
+            ),
             len,
         ))
     }
@@ -392,9 +403,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 let data_str = serde_json::to_string(&data_json).unwrap();
 
                 let supervisor = self.context.data.supervisor.clone();
-                let mut supervisor = supervisor.lock().await;
-                let res = supervisor
-                    .host
+                let mut host = supervisor.host.lock().await;
+                let res = host
                     .eth_send(address, &calldata, &data_str)
                     .map_err(generated::types::Error::trap)?;
 
@@ -410,14 +420,19 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 }
 
                 let supervisor = self.context.data.supervisor.clone();
-                let mut supervisor = supervisor.lock().await;
-                let res = supervisor
-                    .host
+                let mut host = supervisor.host.lock().await;
+                let res = host
                     .eth_call(address, &calldata)
                     .map_err(generated::types::Error::trap)?;
-                Ok(generated::types::Fd::from(self.vfs.place_content(
-                    FileContentsUnevaluated::from_contents(SharedBytes::new(res), 0),
-                )))
+                Ok(generated::types::Fd::from(
+                    self.vfs
+                        .place_content(vfs::FileContents {
+                            contents: util::SharedBytes::new(res),
+                            pos: 0,
+                            release_memory: true,
+                        })
+                        .map_err(generated::types::Error::trap)?,
+                ))
             }
             gl_call::Message::CallContract {
                 address,
@@ -461,7 +476,7 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                         can_send_messages: my_conf.can_send_messages,
                         state_mode: state,
                     },
-                    message_data: TransformedMessage {
+                    message_data: ExtendedMessage {
                         contract_address: address,
                         sender_address: my_data.sender_address,
                         origin_address: my_data.origin_address,
@@ -476,6 +491,7 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     },
                     supervisor: supervisor.clone(),
                     version: genvm_common::version::Version::ZERO,
+                    should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 };
 
                 let res = self
@@ -516,10 +532,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
 
                 let supervisor = self.context.data.supervisor.clone();
 
-                let mut supervisor = supervisor.lock().await;
-                supervisor
-                    .host
-                    .post_event(&real_topics[..topics.len()], &blob_data)
+                let mut host = supervisor.host.lock().await;
+                host.post_event(&real_topics[..topics.len()], &blob_data)
                     .map_err(generated::types::Error::trap)?;
 
                 return Ok(file_fd_none());
@@ -556,10 +570,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 });
                 let data_str = serde_json::to_string(&data_json).unwrap();
 
-                let supervisor = self.context.data.supervisor.clone();
-                let mut supervisor = supervisor.lock().await;
-                let res = supervisor
-                    .host
+                let mut host = self.context.data.supervisor.host.lock().await;
+                let res = host
                     .post_message(&address, &calldata_encoded, &data_str)
                     .map_err(generated::types::Error::trap)?;
 
@@ -601,10 +613,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 });
                 let data_str = serde_json::to_string(&data_json).unwrap();
 
-                let supervisor = self.context.data.supervisor.clone();
-                let mut supervisor = supervisor.lock().await;
-                let res = supervisor
-                    .host
+                let mut host = self.context.data.supervisor.host.lock().await;
+                let res = host
                     .deploy_contract(&calldata_encoded, &code, &data_str)
                     .map_err(generated::types::Error::trap)?;
 
@@ -617,17 +627,24 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     return Err(generated::types::Errno::Forbidden.into());
                 }
 
-                let web = self.context.shared_data.modules.web.clone();
-                let task = tokio::spawn(taskify(async move {
+                let web = self.context.data.supervisor.modules.web.clone();
+                let task = taskify(async move {
                     web.send::<genvm_modules_interfaces::web::RenderAnswer, _>(
                         genvm_modules_interfaces::web::Message::Render(render_payload),
                     )
                     .await
-                }));
+                })
+                .await
+                .map_err(generated::types::Error::trap)?;
 
                 Ok(generated::types::Fd::from(
                     self.vfs
-                        .place_content(FileContentsUnevaluated::from_task(task)),
+                        .place_content(vfs::FileContents {
+                            contents: util::SharedBytes::new(task),
+                            pos: 0,
+                            release_memory: true,
+                        })
+                        .map_err(generated::types::Error::trap)?,
                 ))
             }
             gl_call::Message::WebRequest(request_payload) => {
@@ -635,17 +652,24 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     return Err(generated::types::Errno::Forbidden.into());
                 }
 
-                let web = self.context.shared_data.modules.web.clone();
-                let task = tokio::spawn(taskify(async move {
+                let web = self.context.data.supervisor.modules.web.clone();
+                let task = taskify(async move {
                     web.send::<genvm_modules_interfaces::web::RenderAnswer, _>(
                         genvm_modules_interfaces::web::Message::Request(request_payload),
                     )
                     .await
-                }));
+                })
+                .await
+                .map_err(generated::types::Error::trap)?;
 
                 Ok(generated::types::Fd::from(
                     self.vfs
-                        .place_content(FileContentsUnevaluated::from_task(task)),
+                        .place_content(vfs::FileContents {
+                            contents: util::SharedBytes::new(task),
+                            pos: 0,
+                            release_memory: true,
+                        })
+                        .map_err(generated::types::Error::trap)?,
                 ))
             }
             gl_call::Message::ExecPrompt(prompt_payload) => {
@@ -657,18 +681,18 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     return Err(generated::types::Errno::Inval.into());
                 }
 
-                // Get remaining fuel from host
-                let supervisor = self.context.data.supervisor.clone();
-                let mut sup = supervisor.lock().await;
-                let remaining_fuel_as_gen = sup
-                    .host
+                let mut host = self.context.data.supervisor.host.lock().await;
+                let remaining_fuel_as_gen = host
                     .remaining_fuel_as_gen()
                     .map_err(generated::types::Error::trap)?;
-                std::mem::drop(sup);
+                std::mem::drop(host);
 
-                let llm = self.context.shared_data.modules.llm.clone();
-                let task = tokio::spawn(taskify(async move {
-                    let result = llm
+                let sup = self.context.data.supervisor.clone();
+
+                let task = taskify(async move {
+                    let result = sup
+                        .modules
+                        .llm
                         .send::<genvm_modules_interfaces::llm::PromptAnswer, _>(
                             genvm_modules_interfaces::llm::Message::Prompt {
                                 payload: prompt_payload,
@@ -680,19 +704,25 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     use genvm_modules_interfaces::llm::PromptAnswer;
 
                     if let Ok(PromptAnswer { consumed_gen, .. }) = &result {
-                        let mut sup = supervisor.lock().await;
-                        sup.host
-                            .consume_fuel(*consumed_gen)
+                        let mut host = sup.host.lock().await;
+                        host.consume_fuel(*consumed_gen)
                             .map_err(generated::types::Error::trap)?;
-                        std::mem::drop(sup);
+                        std::mem::drop(host);
                     }
 
                     Ok(result.map(|r| r.data))
-                }));
+                })
+                .await
+                .map_err(generated::types::Error::trap)?;
 
                 Ok(generated::types::Fd::from(
                     self.vfs
-                        .place_content(FileContentsUnevaluated::from_task(task)),
+                        .place_content(vfs::FileContents {
+                            contents: util::SharedBytes::new(task),
+                            pos: 0,
+                            release_memory: true,
+                        })
+                        .map_err(generated::types::Error::trap)?,
                 ))
             }
             gl_call::Message::ExecPromptTemplate(prompt_template_payload) => {
@@ -706,17 +736,17 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 );
 
                 // Get remaining fuel from host
-                let supervisor = self.context.data.supervisor.clone();
-                let mut sup = supervisor.lock().await;
-                let remaining_fuel_as_gen = sup
-                    .host
+                let mut host = self.context.data.supervisor.host.lock().await;
+                let remaining_fuel_as_gen = host
                     .remaining_fuel_as_gen()
                     .map_err(generated::types::Error::trap)?;
-                std::mem::drop(sup);
+                std::mem::drop(host);
 
-                let llm = self.context.shared_data.modules.llm.clone();
-                let task = tokio::spawn(taskify(async move {
-                    let answer = llm
+                let sup = self.context.data.supervisor.clone();
+                let task = taskify(async move {
+                    let answer = sup
+                        .modules
+                        .llm
                         .send::<genvm_modules_interfaces::llm::PromptAnswer, _>(
                             genvm_modules_interfaces::llm::Message::PromptTemplate {
                                 payload: prompt_template_payload,
@@ -727,9 +757,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     use genvm_modules_interfaces::llm::{PromptAnswer, PromptAnswerData};
 
                     if let Ok(PromptAnswer { consumed_gen, .. }) = &answer {
-                        let mut sup = supervisor.lock().await;
-                        sup.host
-                            .consume_fuel(*consumed_gen)
+                        let mut host = sup.host.lock().await;
+                        host.consume_fuel(*consumed_gen)
                             .map_err(generated::types::Error::trap)?;
                     }
 
@@ -751,18 +780,32 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                         ) => Ok(Ok(PromptAnswerData::Text(answer))),
                         (_, Ok(_)) => Err(anyhow::anyhow!("unmatched result")),
                     }
-                }));
+                })
+                .await
+                .map_err(generated::types::Error::trap)?;
 
                 Ok(generated::types::Fd::from(
                     self.vfs
-                        .place_content(FileContentsUnevaluated::from_task(task)),
+                        .place_content(vfs::FileContents {
+                            contents: util::SharedBytes::new(task),
+                            pos: 0,
+                            release_memory: true,
+                        })
+                        .map_err(generated::types::Error::trap)?,
                 ))
             }
-            gl_call::Message::Rollback(msg) => {
-                Err(generated::types::Error::trap(UserError(msg).into()))
-            }
+            gl_call::Message::Rollback(msg) => Err(generated::types::Error::trap(
+                rt::errors::UserError(msg).into(),
+            )),
             gl_call::Message::Return(value) => {
                 let ret = calldata::encode(&value);
+
+                // for return we are not interested in it
+                self.context
+                    .data
+                    .should_capture_fp
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+
                 Err(generated::types::Error::trap(ContractReturn(ret).into()))
             }
             gl_call::Message::RunNondet {
@@ -773,6 +816,7 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 data,
                 allow_write_ops,
             } => self.sandbox(data, allow_write_ops).await,
+            gl_call::Message::Trace(message) => self.gl_call_trace(message).await,
         }
     }
 
@@ -804,19 +848,18 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
         let mut vec = Vec::with_capacity(mem_size);
         unsafe { vec.set_len(mem_size) };
 
-        let supervisor = self.context.data.supervisor.clone();
-        let mut supervisor = supervisor.lock().await;
+        let mut host = self.context.data.supervisor.host.lock().await;
 
-        supervisor
-            .host
-            .storage_read(
-                self.context.data.conf.state_mode,
-                account,
-                slot,
-                index,
-                &mut vec,
-            )
-            .map_err(generated::types::Error::trap)?;
+        host.storage_read(
+            self.context.data.conf.state_mode,
+            account,
+            slot,
+            index,
+            &mut vec,
+        )
+        .map_err(generated::types::Error::trap)?;
+
+        std::mem::drop(host);
 
         mem.copy_from_slice(&vec, buf)?;
         Ok(())
@@ -845,18 +888,15 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
 
         let slot = SlotID::read_from_mem(mem, slot)?;
 
-        if self.context.shared_data.locked_slots.contains(slot) {
+        if self.context.data.supervisor.locked_slots.contains(slot) {
             return Err(generated::types::Errno::Forbidden.into());
         }
 
         let buf: Vec<u8> = read_owned_vec(mem, buf)?;
 
-        let supervisor = self.context.data.supervisor.clone();
-        let mut supervisor = supervisor.lock().await;
+        let mut host = self.context.data.supervisor.host.lock().await;
 
-        supervisor
-            .host
-            .storage_write(slot, index, &buf)
+        host.storage_write(slot, index, &buf)
             .map_err(generated::types::Error::trap)
     }
 
@@ -917,18 +957,16 @@ impl Context {
         &mut self,
         address: calldata::Address,
     ) -> Result<primitive_types::U256, generated::types::Error> {
-        if let Some(res) = self.shared_data.balances.get(&address) {
+        if let Some(res) = self.data.supervisor.balances.get(&address) {
             return Ok(*res);
         }
 
-        let supervisor = self.data.supervisor.clone();
-        let mut supervisor = supervisor.lock().await;
-        let res = supervisor
-            .host
+        let mut host = self.data.supervisor.host.lock().await;
+        let res = host
             .get_balance(address)
             .map_err(generated::types::Error::trap)?;
 
-        let _ = self.shared_data.balances.insert(address, res);
+        let _ = self.data.supervisor.balances.insert(address, res);
 
         Ok(res)
     }
@@ -945,32 +983,81 @@ impl Context {
 
     async fn spawn_and_run(
         &mut self,
-        supervisor: &Arc<tokio::sync::Mutex<crate::vm::Supervisor>>,
+        supervisor: &Arc<rt::supervisor::Supervisor>,
         essential_data: SingleVMData,
-    ) -> anyhow::Result<vm::RunOk> {
-        let limiter = if essential_data.conf.is_deterministic {
-            self.shared_data.limiter_det.clone()
-        } else {
-            self.shared_data.limiter_non_det.clone()
+    ) -> anyhow::Result<rt::vm::RunOk> {
+        let limiter = self
+            .data
+            .supervisor
+            .limiter
+            .get(essential_data.conf.is_deterministic)
+            .clone();
+
+        let checkpoint = limiter.save();
+
+        let vm = rt::supervisor::spawn(supervisor, essential_data).await;
+        let vm = match vm {
+            Ok(vm) => rt::supervisor::apply_contract_actions(supervisor, vm).await,
+            Err(e) => Err(e),
+        };
+        let result = match vm {
+            Ok(vm) => vm.run().await,
+            Err(e) => Err(e),
         };
 
-        let (mut vm, instance, limiter_save) = {
-            let mut supervisor = supervisor.lock().await;
-
-            let mut vm = supervisor.spawn(essential_data).await?;
-            let instance = supervisor.apply_contract_actions(&mut vm).await?;
-
-            (vm, instance, limiter.save())
-        };
-        let result = vm.run(&instance).await;
-
-        limiter.restore(limiter_save);
+        limiter.restore(checkpoint);
 
         result.map(|x| x.0)
     }
 }
 
 impl ContextVFS<'_> {
+    async fn gl_call_trace(
+        &mut self,
+        msg: gl_call::TracePayload,
+    ) -> Result<generated::types::Fd, generated::types::Error> {
+        self.check_version(genvm_common::version::Version::new(0, 1, 10))?;
+        match msg {
+            gl_call::TracePayload::Message(text) => {
+                let now = std::time::Instant::now();
+                let since_prev = now.duration_since(self.context.prev_time);
+                self.context.prev_time = now;
+
+                log_info!(
+                    message = text,
+                    elapsed:? = now.duration_since(self.context.start_time),
+                    since_last_trace:? = since_prev;
+                    "trace"
+                );
+
+                Ok(file_fd_none())
+            }
+            gl_call::TracePayload::RuntimeMicroSec => {
+                let elapsed_micros = if self.context.data.conf.is_deterministic
+                    && !self.context.data.supervisor.shared_data.debug_mode
+                {
+                    0u64
+                } else {
+                    let elapsed = std::time::Instant::now().duration_since(self.context.start_time);
+                    elapsed.as_micros() as u64
+                };
+
+                let data = calldata::encode(&calldata::Value::Number(num_bigint::BigInt::from(
+                    elapsed_micros,
+                )));
+                Ok(generated::types::Fd::from(
+                    self.vfs
+                        .place_content(vfs::FileContents {
+                            contents: util::SharedBytes::new(data),
+                            pos: 0,
+                            release_memory: true,
+                        })
+                        .map_err(generated::types::Error::trap)?,
+                ))
+            }
+        }
+    }
+
     async fn run_nondet(
         &mut self,
         data_leader: Vec<u8>,
@@ -980,111 +1067,88 @@ impl ContextVFS<'_> {
             return Err(generated::types::Errno::Forbidden.into());
         }
 
-        // relaxed reason: only deterministic VM can run it
         let call_no = self
             .context
-            .shared_data
+            .data
+            .supervisor
             .nondet_call_no
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         let leaders_res = {
-            let supervisor = self.context.data.supervisor.clone();
-            let mut supervisor = supervisor.lock().await;
-            supervisor.host.get_leader_result(call_no)
+            let mut host = self.context.data.supervisor.host.lock().await;
+            host.get_leader_result(call_no)
         }
         .map_err(generated::types::Error::trap)?;
 
-        let leaders_res = match (leaders_res, self.context.shared_data.is_sync) {
-            (leaders_res, false) => leaders_res,
-            (Some(leaders_res), true) => return self.set_vm_run_result(leaders_res).map(|x| x.0),
-            (_, true) => {
-                return Err(generated::types::Error::trap(anyhow::anyhow!(
-                    "absent leader result in sync mode"
-                )))
-            }
-        };
-
-        let message_data = match &leaders_res {
-            None => self.context.data.message_data.fork_leader(
-                public_abi::EntryKind::ConsensusStage,
-                data_leader,
-                None,
-            ),
-            Some(leaders_res) => {
-                let dup = match leaders_res {
-                    RunOk::Return(items) => RunOk::Return(items.clone()),
-                    RunOk::UserError(msg) => RunOk::UserError(msg.clone()),
-                    RunOk::VMError(msg, _) => RunOk::VMError(msg.clone(), None),
-                };
-                self.context.data.message_data.fork_leader(
-                    public_abi::EntryKind::ConsensusStage,
-                    data_validator,
-                    Some(dup),
-                )
-            }
-        };
-
-        let supervisor = self.context.data.supervisor.clone();
-
-        let vm_data = SingleVMData {
-            conf: base::Config {
-                needs_error_fingerprint: false,
-                is_deterministic: false,
-                can_read_storage: false,
-                can_write_storage: false,
-                can_spawn_nondet: false,
-                can_call_others: false,
-                can_send_messages: false,
-                state_mode: public_abi::StorageType::Default,
-            },
-            message_data,
-            version: self.context.data.version,
-            supervisor: supervisor.clone(),
-        };
-
-        let my_res = self.context.spawn_and_run(&supervisor, vm_data).await;
-        let my_res = match my_res {
-            Ok(res) => Ok(res),
-            Err(e) => errors::unwrap_vm_errors(e),
-        }
-        .map_err(generated::types::Error::trap)?;
-
-        let ret_res = match leaders_res {
-            None => {
-                let mut supervisor = supervisor.lock().await;
-                supervisor
-                    .host
-                    .post_nondet_result(call_no, &my_res)
-                    .map_err(generated::types::Error::trap)?;
-                Ok(my_res)
-            }
-            Some(leaders_res) => match my_res {
-                RunOk::Return(v) if v == [16] => Ok(leaders_res),
-                RunOk::Return(v) if v == [8] => Err(VMError(
-                    format!(
-                        "{} call {}",
-                        public_abi::VmError::ValidatorDisagrees.value(),
+        let result_to_return = if self.context.data.supervisor.shared_data.is_sync {
+            match leaders_res {
+                None => {
+                    return Err(generated::types::Error::trap(anyhow::anyhow!(
+                        "absent leader result in sync mode, call_no: {}",
                         call_no
-                    ),
-                    None,
-                )
-                .into()),
-                _ => {
-                    log_warn!(validator_result:? = my_res, leaders_result:? = leaders_res; "validator reported unexpected result");
-                    Err(VMError(
-                        format!(
-                            "{} call {}",
-                            public_abi::VmError::ValidatorDisagrees.value(),
-                            call_no
-                        ),
-                        None,
-                    )
-                    .into())
+                    )))
                 }
-            },
+                Some(v) => v,
+            }
+        } else {
+            let message_data = match &leaders_res {
+                None => self.context.data.message_data.fork_leader(
+                    public_abi::EntryKind::ConsensusStage,
+                    data_leader,
+                    None,
+                ),
+                Some(leaders_res) => {
+                    let dup = match leaders_res {
+                        rt::vm::RunOk::Return(items) => rt::vm::RunOk::Return(items.clone()),
+                        rt::vm::RunOk::UserError(msg) => rt::vm::RunOk::UserError(msg.clone()),
+                        rt::vm::RunOk::VMError(msg, _) => rt::vm::RunOk::VMError(msg.clone(), None),
+                    };
+                    self.context.data.message_data.fork_leader(
+                        public_abi::EntryKind::ConsensusStage,
+                        data_validator,
+                        Some(dup),
+                    )
+                }
+            };
+
+            let supervisor = self.context.data.supervisor.clone();
+
+            let vm_data = SingleVMData {
+                conf: base::Config {
+                    needs_error_fingerprint: false,
+                    is_deterministic: false,
+                    can_read_storage: false,
+                    can_write_storage: false,
+                    can_spawn_nondet: false,
+                    can_call_others: false,
+                    can_send_messages: false,
+                    state_mode: public_abi::StorageType::Default,
+                },
+                message_data,
+                version: self.context.data.version,
+                supervisor: supervisor.clone(),
+                should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+
+            let task = rt::supervisor::NonDetVMTask {
+                task: vm_data,
+                call_no,
+            };
+
+            let my_result = match leaders_res {
+                None => task.run_now(&self.context.data.supervisor).await,
+                Some(leaders_res) => {
+                    rt::supervisor::submit_nondet_vm_task(&self.context.data.supervisor, task)
+                        .await;
+
+                    Ok(leaders_res)
+                }
+            };
+
+            my_result.map_err(generated::types::Error::trap)?
         };
-        let ret_res = ret_res.map_err(generated::types::Error::trap)?;
-        self.set_vm_run_result(ret_res).map(|x| x.0)
+
+        self.set_vm_run_result(result_to_return).map(|x| x.0)
     }
 
     async fn sandbox(
@@ -1116,18 +1180,25 @@ impl ContextVFS<'_> {
             message_data,
             supervisor: supervisor.clone(),
             version: genvm_common::version::Version::ZERO,
+            should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         let my_res = self.context.spawn_and_run(&supervisor, vm_data).await;
         let my_res = match my_res {
             Ok(res) => Ok(res),
-            Err(e) => errors::unwrap_vm_errors(e),
+            Err(e) => rt::errors::unwrap_vm_errors(e),
         }
         .map_err(generated::types::Error::trap)?;
 
         let data: Box<[u8]> = my_res.as_bytes_iter().collect();
-        Ok(generated::types::Fd::from(self.vfs.place_content(
-            FileContentsUnevaluated::from_contents(SharedBytes::new(data), 0),
-        )))
+        Ok(generated::types::Fd::from(
+            self.vfs
+                .place_content(vfs::FileContents {
+                    contents: util::SharedBytes::new(data),
+                    pos: 0,
+                    release_memory: true,
+                })
+                .map_err(generated::types::Error::trap)?,
+        ))
     }
 }

@@ -71,8 +71,8 @@ Reads data from contract storage at the specified slot and index.
 Requirements
 ^^^^^^^^^^^^
 
-#. :def:`Sub-VM` must be in deterministic mode
-#. :def:`Sub-VM` must have read storage permission
+#. :term:`Sub-VM` must be in deterministic mode
+#. :term:`Sub-VM` must have read storage permission
 #. index + buf_len must not overflow
 
 ``storage_write``
@@ -83,10 +83,10 @@ Writes data to contract storage at the specified slot and index.
 Requirements
 ^^^^^^^^^^^^
 
-#. :def:`Sub-VM` must be in deterministic mode
-#. :def:`Sub-VM` must have write storage permission
+#. :term:`Sub-VM` must be in deterministic mode
+#. :term:`Sub-VM` must have write storage permission
 #. index + buf_len must not overflow
-#. :def:`Sub-VM` Storage slot must not be locked, unless the sender is in ``upgraders``
+#. :term:`Sub-VM` Storage slot must not be locked, unless the sender is in ``upgraders``
 
 ``get_balance``
 ~~~~~~~~~~~~~~~
@@ -282,3 +282,38 @@ Causes VM to exit with ``UserError``. Terminates contract execution immediately.
 Returns value from contract execution and terminates.
 
 Causes VM to exit with ``ContractReturn``. Encodes return value using :ref:`Calldata Encoded <gvm-def-calldata-encoding>` format.
+
+``Trace.Message`` Message
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Logs a debug message with timing information including:
+
+- Custom message text
+- Total elapsed time since VM start
+- Time elapsed since last trace call
+
+.. note::
+
+   Implementations may choose to ignore this message and return an error.
+
+Requirements
+^^^^^^^^^^^^
+
+#. GenVM version 0.1.10 or higher
+#. :term:`GenVM` implementation is allowed ignore this message
+
+``Trace.RuntimeMicroSec`` Sub-Message
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In :ref:`gvm-def-non-det-mode` returns the elapsed execution time in microseconds since VM start.
+In :ref:`gvm-def-det-mode`, it always returns ``0``.
+
+.. note::
+
+   Implementations may choose to ignore this message and return an error.
+
+Requirements
+^^^^^^^^^^^^
+
+#. GenVM version 0.1.10 or higher
+#. :term:`GenVM` implementation is allowed ignore this message
