@@ -1,0 +1,36 @@
+[package]
+name = "genvm-modules"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+vendored-lua = ["mlua/vendored"]
+
+[dependencies]
+genvm-modules-interfaces = { path = "../interfaces" }
+genvm-common = { path = "../../executor/common" }
+
+anyhow = { version = "1.0.98", features = [] }
+serde = { version = "1.0.219", features = ["rc"]}
+serde_derive = "1.0.219"
+serde_json = "1.0.140"
+tokio = { version = "1.44.1", features = ["rt", "rt-multi-thread", "net", "time", "macros", "sync"], default-features = false}
+reqwest = { version = "0.12.15", features = ["cookies", "gzip", "rustls-tls", "charset", "http2", "json"], default-features = false}
+serde_yaml = "0.9.34"
+clap = { version = "4.5.35", features = ["derive"] }
+signal-hook = "0.3.17"
+# we do not use anyhow feature because it does not work with boxed downcast_ref
+mlua = { version = "0.10.3", default-features = false, features = ["lua53", "async", "serialize", "send", "error-send", "userdata-wrappers"] }
+async-trait = "0.1.88"
+regex = "1.11.1"
+crossbeam = "0.8.4"
+tokio-tungstenite = "0.26.2"
+futures-util = "0.3.31"
+base64 = "0.22.1"
+serde_bytes = "0.11.17"
+rand = "0.9.1"
+chrono = "0.4.41"
+ring = { version = "0.17.14", features = ["std"] }
+url = { version = "2.5.4", features = ["serde"] }
+hex = "0.4.3"

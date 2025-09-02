@@ -1,58 +1,38 @@
-name: GenVM pr
+name: PR fast check
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+
 defaults:
   run:
     shell: bash -x {0}
 
+env:
+  GCS_BUCKET: "gh-af"
+
 jobs:
   initial:
-    if: ${{ !contains( github.event.pull_request.labels.*.name, 'test:skip:pr') }}
-    uses: ./.github/workflows/initial-template.yaml
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'test:skip:pr') }}
+    uses: ./.github/workflows/incl_initial.yaml
     secrets: inherit
 
-### MODULE TESTS
-
   module-test-python:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'test:skip:pr') }}
     needs: [initial]
     runs-on: ubuntu-latest
-    if: needs.initial.outputs.py-changed == 'true'
-    permissions:
-      pull-requests: write   # Needed for posting a comment
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
-      - uses: Gr1N/setup-poetry@v9
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: poetry
       - name: Get source
         uses: ./.github/actions/get-src
         with:
           load_submodules: "false"
-      - name: install dependencies
-        run: |
-          pushd runners/genlayer-py-std && \
-            poetry install && \
-            popd
-      - name: pytest
-        run: |
-          pushd runners/genlayer-py-std && \
-          echo "_(execution **${{ github.run_id }}** / attempt **${{ github.run_attempt }}**)_" > /tmp/py-cov.log && \
-          echo '```' >> /tmp/py-cov.log && \
-          poetry run pytest -n auto | tee -a /tmp/py-cov.log && \
-          echo '```' >> /tmp/py-cov.log && \
-          popd
-      - name: report
-        uses: thollander/actions-comment-pull-request@v3
-        with:
-          file-path: /tmp/py-cov.log
-          comment-tag: py-coverage
-
-### END
+          with_nix: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - run: ./support/ci/pipelines/test-python.sh
 
   validate-end:
     runs-on: ubuntu-latest
@@ -62,6 +42,12 @@ jobs:
       - module-test-python
     steps:
       - name: check
-        if: ${{ !contains( github.event.pull_request.labels.*.name, 'test:skip:pr') }}
         run: |
-          echo ${{ join(needs.*.result, ' ') }} | grep -vP 'failure|cancelled'
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'test:skip:pr') }}" == "true" ]]; then
+            echo "PR tests skipped due to test:skip:pr label"
+          else
+            if echo "${{ join(needs.*.result, ' ') }}" | grep -Eq 'failure|cancelled'; then
+              echo "Detected failed or cancelled job(s): ${{ join(needs.*.result, ' ') }}"
+              exit 1
+            fi
+          fi

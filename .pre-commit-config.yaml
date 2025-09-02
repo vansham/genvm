@@ -8,7 +8,7 @@ repos:
         exclude: ^\.git-third-party|runners/genlayer-py-std/fuzz/inputs
       - id: check-added-large-files
       - id: check-json
-        exclude: ^\.git-third-party
+        exclude: (^\.git-third-party)|(/tsconfig.json$)
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict
@@ -23,12 +23,6 @@ repos:
     rev: v0.6.9
     hooks:
       - id: ruff-format
-
-  - repo: https://github.com/pryorda/dockerfilelint-precommit-hooks
-    rev: v0.1.0
-    hooks:
-      - id: dockerfilelint
-        exclude: executor/modules/implementation/webdriver/Dockerfile
 
   - repo: https://github.com/sirosen/check-jsonschema
     rev: 0.28.2
@@ -53,23 +47,17 @@ repos:
     hooks:
       - id: check-shebang
         name: check shebang
-        entry: ./build-scripts/hooks/shebang.py
+        entry: ./support/ci/shebang.py
         language: system
 
       - id: no-commit-test
         name: do not commit test runners
-        entry: grep -P false runners/dbg.nix
+        entry: grep -P false runners/support/current/dev-mode.nix
         language: system
-        files: ^runners/dbg.nix$
+        files: ^runners/support/current/dev-mode.nix$
 
       - id: cargo-fmt
         name: cargo fmt
-        entry: bash build-scripts/cargo-fmt.sh
-        language: system
-        files: .*\.rs$
-
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: bash build-scripts/cargo-clippy.sh
+        entry: bash support/ci/cargo-fmt.sh
         language: system
         files: .*\.rs$
