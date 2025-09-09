@@ -63,7 +63,7 @@ cat <<EOF > flake-config.json
 EOF
 
 mkdir -p build
-nix build -o build/out-$TARGET -v -L .#all-for-platform.$TARGET
+nix build -o build/out-$TARGET -v -L .#all-for-platform.$TARGET --show-trace
 
 pushd build/out-$TARGET
 tar -cf - . | xz -9 > ../genvm-$TARGET.tar.xz

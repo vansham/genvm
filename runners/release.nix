@@ -32,7 +32,7 @@ let
 		in groupByKey pairs;
 
 	latest = builtins.toFile "latest.json" (builtins.toJSON (converter-single (import ./default.nix)));
-	all = builtins.toFile "all.json" (builtins.toJSON (converter-multi (import ./all/all.nix args)));
+	all = builtins.toFile "all.json" (builtins.toJSON (converter-multi (import ./support/all/all.nix args)));
 
 	subpath = "executor/${build-config.executor-version}/data/";
 in {

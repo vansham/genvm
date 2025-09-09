@@ -24,9 +24,8 @@ let
 				sourceRoot = "./source/modules/implementation";
 
 				extraLibs = [
-					components.${target}.libc
 					components.${target}.liblua
-				];
+				] ++ (if target == "arm64-macos" then [] else [ components.${target}.libc ]);
 
 				LUA_LIB_NAME = "lua-${components.${target}.liblua.version}";
 			};

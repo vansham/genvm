@@ -11,7 +11,7 @@ let
 
 	version = "5.3";
 
-	isMacos = name-target == "macos-arm64";
+	isMacos = name-target == "arm64-macos";
 
 	outSuffix = if isMacos then "dylib" else "so";
 in pkgs.stdenvNoCC.mkDerivation {

@@ -45,7 +45,7 @@
 						(import ./modules args)
 						(import ./executor args)
 						(import ./runners/release.nix args)
-						(import ./runners/all args)
+						(import ./runners/support/all args)
 					];
 
 					merge-all-for-platform = platform:

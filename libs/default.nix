@@ -17,17 +17,17 @@ in {
 	};
 
 	arm64-linux = {
-		libc = build-libc { inherit pkgs zig; conf-target = "aarch64"; zig-target = "aarch64-linux"; name-target = "arm64"; };
+		libc = build-libc { inherit pkgs zig; cc = "zig-cc-arm64-linux"; conf-target = "aarch64"; name-target = "arm64"; };
 		liblua = build-lua {
 			inherit pkgs zig;
 			name-target = "arm64-linux";
 		};
 	};
 
-	macos-arm64 = {
+	arm64-macos = {
 		liblua = build-lua {
 			inherit pkgs zig;
-			name-target = "macos-arm64";
+			name-target = "arm64-macos";
 		};
 	};
 }

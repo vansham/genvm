@@ -21,6 +21,10 @@ defaults:
   run:
     shell: bash -x {0}
 
+permissions:
+  actions: read
+  contents: read
+
 env:
   GCS_BUCKET: "gh-af"
 
@@ -66,21 +70,21 @@ jobs:
     needs: [gen-tag]
     uses: ./.github/workflows/incl_build_trg.yaml
     with:
-      target: linux-amd64
+      target: amd64-linux
       executor_version: ${{ needs.gen-tag.outputs.tag }}
 
   build-linux-arm64:
     needs: [gen-tag]
     uses: ./.github/workflows/incl_build_trg.yaml
     with:
-      target: linux-arm64
+      target: arm64-linux
       executor_version: ${{ needs.gen-tag.outputs.tag }}
 
   build-macos-arm64:
     needs: [gen-tag]
     uses: ./.github/workflows/incl_build_trg.yaml
     with:
-      target: build-macos-arm64
+      target: arm64-macos
       executor_version: ${{ needs.gen-tag.outputs.tag }}
 
   test-linux-amd64:
