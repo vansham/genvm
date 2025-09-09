@@ -1,9 +1,9 @@
 local simple = import 'templates/simple.jsonnet';
-simple.run('${jsonnetDir}/map_too_many.py') {
-    "prepare": '${jsonnetDir}/map_too_many_prepare.py',
+simple.run('${jsonnetDir}/${fileBaseName}.py') {
     "calldata": |||
         {
             "method": "main",
+            "args": [True]
         }
-    |||,
+    |||
 }
