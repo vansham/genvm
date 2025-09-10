@@ -65,6 +65,8 @@ jobs:
     with:
       target: universal
       executor_version: ${{ needs.gen-tag.outputs.tag }}
+    secrets:
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
   build-linux-amd64:
     needs: [gen-tag]
@@ -72,6 +74,8 @@ jobs:
     with:
       target: amd64-linux
       executor_version: ${{ needs.gen-tag.outputs.tag }}
+    secrets:
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
   build-linux-arm64:
     needs: [gen-tag]
@@ -79,13 +83,15 @@ jobs:
     with:
       target: arm64-linux
       executor_version: ${{ needs.gen-tag.outputs.tag }}
+    secrets:
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
-  build-macos-arm64:
-    needs: [gen-tag]
-    uses: ./.github/workflows/incl_build_trg.yaml
-    with:
-      target: arm64-macos
-      executor_version: ${{ needs.gen-tag.outputs.tag }}
+  #build-macos-arm64:
+  #  needs: [gen-tag]
+  #  uses: ./.github/workflows/incl_build_trg.yaml
+  #  with:
+  #    target: arm64-macos
+  #    executor_version: ${{ needs.gen-tag.outputs.tag }}
 
   test-linux-amd64:
     needs:
@@ -100,28 +106,30 @@ jobs:
         uses: ./.github/actions/get-src
         with:
           load_submodules: "false"
-          with_nix: "false"
+          with_nix: "true"
       - name: Download artifact
         run: |
           mkdir -p build/out && \
           pushd build/out && \
           curl -L --fail-with-body -H 'Accept: application/octet-stream' -o genvm-linux-amd64.tar.xz ${{ needs.build-linux-amd64.outputs.artifact_url }} && \
           curl -L --fail-with-body -H 'Accept: application/octet-stream' -o genvm-universal.tar.xz ${{ needs.build-universal.outputs.artifact_url }} && \
-          tar -xf genvm-linux-amd64.tar.xz && \
-          tar -xf genvm-universal.tar.xz && \
+          tar -xf genvm-linux-amd64.tar.xz --no-same-owner && \
+          tar -xf genvm-universal.tar.xz --no-same-owner && \
           popd && \
           true
+      - name: Run post-install
+        run: |
+          ./build/out/executor/*/bin/post-install.py
       - name: Run stable tests
         run: |
-          ./build/out/executor/*/bin/post-install.py && \
-          ./tests/runner/run.py --gen-vm ./build/out/executor/*/bin/genvm --filter '^stable/'
+          nix develop .#mock-tests --command python3 ./tests/runner/run.py --gen-vm ./build/out/executor/*/bin/genvm --filter '^stable/'
 
   release-publish:
     needs:
       - gen-tag
       - build-linux-amd64
       - build-linux-arm64
-      - build-macos-arm64
+      #- build-macos-arm64
       - build-universal
       - test-linux-amd64
     runs-on: ubuntu-latest
@@ -147,10 +155,11 @@ jobs:
             poetry publish -r test-pypi && \
             popd
       - run: |
+          # curl -L --fail-with-body -H 'Accept: application/octet-stream' -o genvm-macos-arm64.tar.xz ${{ needs.build-macos-arm64.outputs.artifact_url }}
+
           curl -L --fail-with-body -H 'Accept: application/octet-stream' -o genvm-universal.tar.xz ${{ needs.build-universal.outputs.artifact_url }} && \
           curl -L --fail-with-body -H 'Accept: application/octet-stream' -o genvm-linux-amd64.tar.xz ${{ needs.build-linux-amd64.outputs.artifact_url }} && \
           curl -L --fail-with-body -H 'Accept: application/octet-stream' -o genvm-linux-arm64.tar.xz ${{ needs.build-linux-arm64.outputs.artifact_url }} && \
-          curl -L --fail-with-body -H 'Accept: application/octet-stream' -o genvm-macos-arm64.tar.xz ${{ needs.build-macos-arm64.outputs.artifact_url }} && \
           true
 
       - run: |
@@ -165,7 +174,7 @@ jobs:
             genvm-universal.tar.xz
             genvm-linux-amd64.tar.xz
             genvm-linux-arm64.tar.xz
-            genvm-macos-arm64.tar.xz
+          #  genvm-macos-arm64.tar.xz
           name: Release ${{ needs.gen-tag.outputs.tag }}
           tag_name: ${{ needs.gen-tag.outputs.tag }}
           draft: false

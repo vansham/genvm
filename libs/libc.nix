@@ -1,8 +1,6 @@
 { conf-target
-, cc
 , name-target
 , pkgs
-, zig
 }:
 let
 	musl-src = builtins.fetchGit {
@@ -15,11 +13,12 @@ in pkgs.stdenvNoCC.mkDerivation {
 
 	src = musl-src;
 
-	nativeBuildInputs = [ zig pkgs.coreutils ];
+	nativeBuildInputs = [ pkgs.clang pkgs.lld pkgs.coreutils ];
 
 	configurePhase = ''
-		CC=${cc} \
+		CC="clang --target=${conf-target}-linux-musl" \
 			CFLAGS="-O2" \
+			LDFLAGS="-fuse-ld=lld" \
 			./configure --target=${conf-target}
 	'';
 

@@ -3,6 +3,7 @@
 , compile-rust
 , components
 , get-root-subtree
+, build-config
 , ...
 }:
 let
@@ -25,9 +26,11 @@ let
 
 				extraLibs = [
 					components.${target}.liblua
-				] ++ (if target == "arm64-macos" then [] else [ components.${target}.libc ]);
+				] ++ (if target == "arm64-macos" then [ components.${target}.libiconv ] else [ components.${target}.libc ]);
 
 				LUA_LIB_NAME = "lua-${components.${target}.liblua.version}";
+
+				GENVM_PROFILE = build-config.executor-version;
 			};
 		in pkgs.stdenvNoCC.mkDerivation rec {
 			name = "genvm-modules-${target}";

@@ -1131,17 +1131,26 @@ impl ContextVFS<'_> {
                 call_no,
             };
 
-            let my_result = match leaders_res {
-                None => task.run_now(&self.context.data.supervisor).await,
+            match leaders_res {
+                None => {
+                    let res = task
+                        .run_now(&self.context.data.supervisor)
+                        .await
+                        .map_err(generated::types::Error::trap)?;
+
+                    let mut host = self.context.data.supervisor.host.lock().await;
+                    host.post_nondet_result(call_no, &res)
+                        .map_err(generated::types::Error::trap)?;
+
+                    res
+                }
                 Some(leaders_res) => {
                     rt::supervisor::submit_nondet_vm_task(&self.context.data.supervisor, task)
                         .await;
 
-                    Ok(leaders_res)
+                    leaders_res
                 }
-            };
-
-            my_result.map_err(generated::types::Error::trap)?
+            }
         };
 
         self.set_vm_run_result(result_to_return).map(|x| x.0)

@@ -93,7 +93,7 @@ def patch_interpreter(path: Path):
 		return
 
 	binary.interpreter = str(get_interpreter_path())
-	binary.write(path)
+	binary.write(str(path))
 
 
 logger.info('patching interpreters')

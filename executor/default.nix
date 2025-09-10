@@ -29,7 +29,9 @@ let
 				];
 				sourceRoot = "./source/executor";
 
-				extraLibs = if target == "arm64-macos" then [] else [ components.${target}.libc ];
+				extraLibs = if target == "arm64-macos" then [ components.${target}.libiconv ] else [ components.${target}.libc ];
+
+				GENVM_PROFILE = build-config.executor-version;
 			};
 		in pkgs.stdenvNoCC.mkDerivation rec {
 			name = "genvm-modules-${target}";

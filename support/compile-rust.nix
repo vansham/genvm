@@ -105,8 +105,8 @@ stdenv.mkDerivation (
 			++ [
 				cargoSetupHook
 				rust-pkg
-				pkgs.strace
 				zig
+				pkgs.glibc
 			];
 
 		buildInputs =
@@ -148,6 +148,9 @@ stdenv.mkDerivation (
 
 			ls -l /build/libs/
 
+			echo "PATH=$PATH"
+			echo "RUSTFLAGS=$RUSTFLAGS"
+			echo cargo build --target ${targetAsRust} -j $NIX_BUILD_CORES --offline --${buildType}
 			cargo build --target ${targetAsRust} -j $NIX_BUILD_CORES --offline --${buildType}
 			runHook postBuild
 
@@ -155,11 +158,11 @@ stdenv.mkDerivation (
 					-maxdepth 1 \
 					-type f \
 					-executable -not -regex ".*\.\(so.[0-9.]+\|so\|a\|dylib\)" )
-				echo "Found binary $bins"
+			echo "Found binary $bins"
 
 			cp "$bins" target/__out
 
-			patchelf --set-rpath '$ORIGIN/../lib:$ORIGIN/../../lib:' target/__out
+			patchelf --set-rpath '$ORIGIN/../lib:$ORIGIN/../../../lib:' target/__out
 
 			for i in $(patchelf --print-needed target/__out)
 			do

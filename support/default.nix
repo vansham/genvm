@@ -97,6 +97,6 @@ in rec {
 						# builtins.trace "${relPath} -> ${if allow-dflt then "true" else "false"}" allow-dflt;
 		};
 
-	compile-rust = import ./compile-rust.nix { inherit pkgs zig; };
+	compile-rust = import ./compile-rust.nix { inherit pkgs zig; withZig = true; };
 	merge-components = builtins.foldl' mergeDoubleDepthAttrs {};
 }

@@ -162,6 +162,14 @@
 									packages = packages-0 ++ packages-debug-test ++ packages-rust;
 									shellHook = shell-hook-base;
 								};
+								devShells.mock-tests = pkgs.mkShell {
+									packages = packages-0 ++ [
+										pkgs.python312
+										pkgs.python312Packages.jsonnet
+										pkgs.wabt
+									];
+									shellHook = shell-hook-base;
+								};
 								devShells.full = pkgs.mkShell {
 									packages = packages-0 ++ packages-debug-test ++ packages-py-test ++ packages-rust ++ packages-lint;
 									shellHook = shell-hook-base;

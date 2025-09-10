@@ -65,6 +65,7 @@ EOF
 mkdir -p build
 nix build -o build/out-$TARGET -v -L .#all-for-platform.$TARGET --show-trace
 
+PREV=$(readlink -f .)
 pushd build/out-$TARGET
-tar -cf - . | xz -9 > ../genvm-$TARGET.tar.xz
+find . -type f -print0 | sort -z | xargs -0 tar --transform 's,^\./,,' --mode=ug+w -cf - | xz -9 > "$PREV/build/genvm-$TARGET.tar.xz"
 popd

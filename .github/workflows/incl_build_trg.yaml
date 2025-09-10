@@ -11,10 +11,17 @@ on:
         description: 'Version name of the executor'
         required: true
         type: string
+    secrets:
+      GCP_SA_KEY:
+        description: 'Google Cloud Service Account Key'
+        required: true
     outputs:
       artifact_url:
         description: "URL to download the built artifact"
         value: ${{ jobs.build.outputs.artifact_url }}
+
+env:
+  GCS_BUCKET: "gh-af"
 
 jobs:
   build:
@@ -23,7 +30,7 @@ jobs:
       contents: read
       actions: read
     outputs:
-      artifact_url: ${{ steps.upload-artifact.outputs.artifact-url }}
+      artifact_url: ${{ steps.upload.outputs.gcs_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,9 +46,27 @@ jobs:
         run: |
           ./support/ci/pipelines/build.sh --target ${{ inputs.target }} --executor-version ${{ inputs.executor_version }}
 
-      - name: Upload artifact
-        id: upload-artifact
-        uses: actions/upload-artifact@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          name: genvm-${{ inputs.executor_version }}-${{ inputs.target }}
-          path: build/out/genvm-${{ inputs.target }}.tar.xz
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Generate upload url
+        id: upload
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          DIR_NAME="genvm_executor_${GITHUB_SHA}_${TIMESTAMP}"
+          echo "dirname=$DIR_NAME" >> $GITHUB_OUTPUT
+          BASE_NAME="genvm-${{ inputs.target }}.tar.xz"
+          echo "basename=$BASE_NAME" >> $GITHUB_OUTPUT
+          echo "gcs_url=https://storage.googleapis.com/$GCS_BUCKET/$DIR_NAME/$BASE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload to GCS
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: build/${{ steps.upload.outputs.basename }}
+          destination: ${{ env.GCS_BUCKET }}/${{ steps.upload.outputs.dirname }}
+          parent: false

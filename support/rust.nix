@@ -47,75 +47,72 @@ let
 		(simpleComponent manifest.pkg.rust-src.target."*")
 	]);
 in pkgs.stdenvNoCC.mkDerivation rec {
-		name = "genvm-rust";
+	name = "genvm-rust";
 
-		srcs = components;
-		sourceRoot = ".";
+	srcs = components;
+	sourceRoot = ".";
 
-		dontConfigure = true;
-		dontBuild = true;
+	dontConfigure = true;
+	dontBuild = true;
 
-		nativeBuildInputs = [ pkgs.makeWrapper ];
+	nativeBuildInputs = [ pkgs.makeWrapper ];
 
-		buildInputs = [
-			pkgs.glibc
-			pkgs.zlib
-			pkgs.bash
-			pkgs.gcc.cc.lib
+	buildInputs = [
+		pkgs.glibc
+		pkgs.zlib
+		pkgs.bash
+		pkgs.gcc.cc.lib
 
-			zig
-		];
+		zig
+	];
 
-		dontAutoPatchelf = true;
+	dontAutoPatchelf = true;
 
-		fixupPhase = ''
-			find $out/bin -type f -executable | while read binary; do
-				if file "$binary" | grep -q "ELF"
-				then
-					echo "Patching $binary"
-					patchelf \
-						--set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 \
-						--set-rpath "${pkgs.lib.makeLibraryPath buildInputs}:"'$ORIGIN/../lib' \
-						"$binary"
-				fi
-			done
+	fixupPhase = ''
+		find $out/bin -type f -executable | while read binary; do
+			if file "$binary" | grep -q "ELF"
+			then
+				echo "Patching $binary"
+				patchelf \
+					--set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 \
+					--set-rpath "${pkgs.lib.makeLibraryPath buildInputs}:"'$ORIGIN/../lib' \
+					"$binary"
+			fi
+		done
 
-			find $out/lib -type f -maxdepth 1 | while read binary; do
-				if file "$binary" | grep -q "ELF"
-				then
-					echo "Patching $binary"
-					patchelf \
-						--set-rpath "${pkgs.lib.makeLibraryPath buildInputs}:"'$ORIGIN/../lib' \
-						"$binary"
-				fi
-			done
+		find $out/lib -type f -maxdepth 1 | while read binary; do
+			if file "$binary" | grep -q "ELF"
+			then
+				echo "Patching $binary"
+				patchelf \
+					--set-rpath "${pkgs.lib.makeLibraryPath buildInputs}:"'$ORIGIN/../lib' \
+					"$binary"
+			fi
+		done
 
-			runHook postInstall
-		'';
+		runHook postInstall
+	'';
 
-		installPhase = ''
-			mkdir -p $out
-			for i in $(find . -type d -maxdepth 2 -mindepth 1) ;
-			do
-				cp -r "$i/." $out/.
-			done
+	installPhase = ''
+		mkdir -p $out
+		for i in $(find . -type d -maxdepth 2 -mindepth 1) ;
+		do
+			cp -r "$i/." $out/.
+		done
 
-			ls -l "$out"
-		'';
-	} // pkgs.lib.mkIf withZig {
-		postInstall = ''
-			wrapProgram $out/bin/cargo \
-				--set CC zig-cc-${systemAsGenVM} \
-				--set LD zig-cc-${systemAsGenVM} \
-				--set CC_x86_64_unknown_linux_musl zig-cc-amd64-linux \
-				--set CC_x86_64_unknown_linux_gnu zig-cc-amd64-linux-gnu \
-				--set CC_aarch64_unknown_linux_musl zig-cc-arm64-linux \
-				--set CC_aarch64_unknown_linux_gnu zig-cc-arm64-linux-gnu \
-				--set CC_aarch64_apple_darwin zig-cc-arm64-macos \
-				--set CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER zig-cc-amd64-linux \
-				--set CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER zig-cc-amd64-linux-gnu \
-				--set CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER zig-cc-arm64-linux \
-				--set CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER zig-cc-arm64-linux-gnu \
-				--set CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER zig-cc-arm64-macos
-		'';
-	}
+		ls -l "$out"
+	'' + (if withZig then ''
+		wrapProgram $out/bin/cargo \
+			--set CC_x86_64_unknown_linux_musl zig-cc-amd64-linux \
+			--set CC_x86_64_unknown_linux_gnu zig-cc-amd64-linux-gnu \
+			--set CC_aarch64_unknown_linux_musl zig-cc-arm64-linux \
+			--set CC_aarch64_unknown_linux_gnu zig-cc-arm64-linux-gnu \
+			--set CC_aarch64_apple_darwin zig-cc-arm64-macos \
+			--set CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER zig-cc-amd64-linux \
+			--set CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER zig-cc-arm64-linux \
+			--set CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER zig-cc-arm64-macos
+
+			#--set CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER zig-cc-arm64-linux-gnu \
+			#--set CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER zig-cc-amd64-linux-gnu \
+	'' else "");
+}
