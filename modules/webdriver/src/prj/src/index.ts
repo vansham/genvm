@@ -53,11 +53,11 @@ function getNavigationErrorMessage(error: any): string {
 	return `Navigation error: ${error.message || 'Unknown error'}`;
 }
 
-async function navigateToPage(page: pup.Page, targetUrl: string): Promise<{ status: number; data?: string; response?: pup.HTTPResponse }> {
+async function navigateToPage(page: pup.Page, targetUrl: string, loadTimeout: number): Promise<{ status: number; data?: string; response?: pup.HTTPResponse }> {
 	try {
 		const response = await page.goto(targetUrl, {
 			waitUntil: 'networkidle0',
-			timeout: 30000
+			timeout: loadTimeout
 		});
 
 		if (!response) {
@@ -125,14 +125,14 @@ async function initBrowser() {
 	}
 }
 
-async function renderPage(targetUrl: string, mode: 'text' | 'html' | 'screenshot', waitAfterLoaded: number = 0) {
+async function renderPage(targetUrl: string, mode: 'text' | 'html' | 'screenshot', loadTimeout: number = 30000, waitAfterLoaded: number = 0) {
 	const browser = await initBrowser();
 	const page = await browser.newPage();
 
 	try {
 		page.setViewport({ width: 1920/2, height: 1080/2 });
 
-		const navigationResult = await navigateToPage(page, targetUrl);
+		const navigationResult = await navigateToPage(page, targetUrl, loadTimeout);
 
 		// If navigation failed, return the error immediately
 		if (navigationResult.data) {
@@ -174,6 +174,7 @@ async function handleRenderRequest(parsedUrl: url.UrlWithParsedQuery, req: http.
 		const targetUrl = query.url as string;
 		const mode = query.mode as 'text' | 'html' | 'screenshot';
 		const waitAfterLoaded = parseInt(query.waitAfterLoaded as string || '0');
+		const loadTimeout = parseInt(query.loadTimeout as string || '30000');
 
 		if (!targetUrl) {
 			res.writeHead(400, {'Content-Type': 'application/json'});
@@ -187,7 +188,7 @@ async function handleRenderRequest(parsedUrl: url.UrlWithParsedQuery, req: http.
 			return;
 		}
 
-		const result = await renderPage(targetUrl, mode, waitAfterLoaded);
+		const result = await renderPage(targetUrl, mode, loadTimeout, waitAfterLoaded);
 
 		res.setHeader('Resulting-Status', result.status.toString());
 
