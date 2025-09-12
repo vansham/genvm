@@ -174,6 +174,10 @@
 									packages = packages-0 ++ packages-debug-test ++ packages-py-test ++ packages-rust ++ packages-lint;
 									shellHook = shell-hook-base;
 								};
+								devShells.check-qemu = pkgs.mkShell {
+									packages = packages-0 ++ [ pkgs.qemu ];
+									shellHook = shell-hook-base;
+								};
 							}
 						);
 			in
