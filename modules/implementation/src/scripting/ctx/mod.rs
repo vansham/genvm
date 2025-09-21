@@ -5,6 +5,7 @@ use crate::common::ModuleError;
 use genvm_common::*;
 
 pub mod dflt;
+pub mod filters;
 pub mod req;
 mod signing;
 
