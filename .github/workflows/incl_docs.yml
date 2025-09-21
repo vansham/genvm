@@ -54,13 +54,14 @@ jobs:
 
       - name: Deploy version to target repository
         run: |
+          SRC=$(readlink -f build/docs/html/)
           cd target-repo
 
           # Create version directory
           mkdir -p "_site/${{ inputs.version }}"
 
           # Copy built docs to version directory
-          cp -r ../build/docs/html/. "_site/${{ inputs.version }}/."
+          cp -r "$SRC/." "_site/${{ inputs.version }}/."
 
           # Update versions.json only for non-main versions
           if [ "${{ inputs.version }}" != "main" ]; then

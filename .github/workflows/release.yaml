@@ -121,13 +121,6 @@ jobs:
           ./build/out/executor/*/bin/post-install.py || true
           nix develop .#check-qemu --command bash -c 'qemu-aarch64 ./build/out/bin/genvm-modules --version'
 
-  #build-macos-arm64:
-  #  needs: [gen-tag]
-  #  uses: ./.github/workflows/incl_build_trg.yaml
-  #  with:
-  #    target: arm64-macos
-  #    executor_version: ${{ needs.gen-tag.outputs.tag }}
-
   test-linux-amd64:
     needs:
       - build-linux-amd64
@@ -159,7 +152,7 @@ jobs:
         run: |
           nix develop .#mock-tests --command python3 ./tests/runner/run.py --gen-vm ./build/out/executor/*/bin/genvm --filter '^stable/'
 
-  test-macos-amd64:
+  test-macos-arm64:
     needs:
       - build-macos-arm64
       - build-universal
@@ -183,6 +176,13 @@ jobs:
           tar -xf genvm-universal.tar.xz --no-same-owner && \
           popd && \
           true
+      - name: Get wabt
+        run: |
+          brew install wabt
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Run post-install
         run: |
           ./build/out/executor/*/bin/post-install.py
@@ -202,6 +202,7 @@ jobs:
       - build-universal
       - test-linux-amd64
       - test-linux-arm64
+      - test-macos-arm64
     runs-on: ubuntu-latest
     permissions:
       contents: write  # Needed for creating releases

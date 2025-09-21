@@ -40,6 +40,6 @@ in pkgs.stdenvNoCC.mkDerivation {
 	installPhase = ''
 		mkdir -p "$out/lib"
 		echo "${toString zig}"
-		cp liblua.${outSuffix} "$out/lib/liblua-${version}.${outSuffix}"
+		cp liblua.${outSuffix} "$out/lib/liblua.${outSuffix}"
 	'';
 }

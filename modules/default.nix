@@ -28,7 +28,7 @@ let
 					components.${target}.liblua
 				] ++ (if target == "arm64-macos" then [ components.${target}.libiconv ] else [ components.${target}.libc ]);
 
-				LUA_LIB_NAME = "lua-${components.${target}.liblua.version}";
+				LUA_LIB_NAME = "lua";
 
 				GENVM_PROFILE = build-config.executor-version;
 			};

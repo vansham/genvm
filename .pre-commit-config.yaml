@@ -61,3 +61,9 @@ repos:
         entry: bash support/ci/cargo-fmt.sh
         language: system
         files: .*\.rs$
+
+      - id: check-flake-config-identical
+        name: check flake-config files are identical
+        entry: diff -q flake-config.json flake-config.orig.json
+        language: system
+        files: ^flake-config\.(orig\.)?json$
