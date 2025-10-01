@@ -3,6 +3,17 @@ import http from 'http';
 import url from 'url';
 import { Command } from 'commander';
 
+interface NavigationOptions {
+	waitUntil?: pup.PuppeteerLifeCycleEvent;
+	timeout?: number;
+}
+
+interface RenderOptions {
+	loadTimeout?: number;
+	waitAfterLoaded?: number;
+	waitUntil?: pup.PuppeteerLifeCycleEvent;
+}
+
 const program = new Command();
 program
   .name('puppeteer-webdriver')
@@ -53,22 +64,24 @@ function getNavigationErrorMessage(error: any): string {
 	return `Navigation error: ${error.message || 'Unknown error'}`;
 }
 
-async function navigateToPage(page: pup.Page, targetUrl: string, loadTimeout: number): Promise<{ status: number; data?: string; response?: pup.HTTPResponse }> {
+async function navigateToPage(page: pup.Page, targetUrl: string, options: NavigationOptions = {}): Promise<{ status: number; error?: string; response?: pup.HTTPResponse }> {
+	const { waitUntil = 'domcontentloaded', timeout = 30000 } = options;
+
 	try {
 		const response = await page.goto(targetUrl, {
-			waitUntil: 'networkidle0',
-			timeout: loadTimeout
+			waitUntil,
+			timeout
 		});
 
 		if (!response) {
-			return { status: STATUS_I_AM_A_TEAPOT, data: 'Navigation did not result in a valid HTTP response' };
+			return { status: STATUS_I_AM_A_TEAPOT, error: 'Navigation did not result in a valid HTTP response' };
 		}
 
 		return { status: response.status(), response };
 	} catch (navigationError: any) {
 		const statusCode = getNavigationErrorStatus(navigationError);
 		const errorMessage = getNavigationErrorMessage(navigationError);
-		return { status: statusCode, data: errorMessage };
+		return { status: statusCode, error: errorMessage };
 	}
 }
 
@@ -129,18 +142,20 @@ function statusIsGood(status: number): boolean {
 	return status >= 200 && status < 300 || status === 304;
 }
 
-async function renderPage(targetUrl: string, mode: 'text' | 'html' | 'screenshot', loadTimeout: number = 30000, waitAfterLoaded: number = 0) {
+async function renderPage(targetUrl: string, mode: 'text' | 'html' | 'screenshot', options: RenderOptions = {}): Promise<{status: number, body: any}> {
+	const { loadTimeout = 30000, waitAfterLoaded = 0, waitUntil = 'domcontentloaded' } = options;
+
 	const browser = await initBrowser();
 	const page = await browser.newPage();
 
 	try {
 		page.setViewport({ width: 1920/2, height: 1080/2 });
 
-		const navigationResult = await navigateToPage(page, targetUrl, loadTimeout);
+		const navigationResult = await navigateToPage(page, targetUrl, { waitUntil, timeout: loadTimeout });
 
 		// If navigation failed, return the error immediately
-		if (navigationResult.data) {
-			return { status: navigationResult.status, data: navigationResult.data };
+		if (navigationResult.error) {
+			return { status: navigationResult.status, body: navigationResult.error };
 		}
 
 		const statusCode = navigationResult.status;
@@ -165,7 +180,7 @@ async function renderPage(targetUrl: string, mode: 'text' | 'html' | 'screenshot
 				data = 'Invalid mode';
 		}
 
-		return { status: statusCode, data };
+		return { status: statusCode, body: data };
 	} finally {
 		await page.close();
 	}
@@ -177,8 +192,6 @@ async function handleRenderRequest(parsedUrl: url.UrlWithParsedQuery, req: http.
 	try {
 		const targetUrl = query.url as string;
 		const mode = query.mode as 'text' | 'html' | 'screenshot';
-		const waitAfterLoaded = parseFloat(query.waitAfterLoaded as string || '0');
-		const loadTimeout = parseInt(query.loadTimeout as string || '30000');
 
 		if (!targetUrl) {
 			res.writeHead(400, {'Content-Type': 'application/json'});
@@ -192,7 +205,13 @@ async function handleRenderRequest(parsedUrl: url.UrlWithParsedQuery, req: http.
 			return;
 		}
 
-		const result = await renderPage(targetUrl, mode, loadTimeout, waitAfterLoaded);
+		const options: RenderOptions = {
+			waitAfterLoaded: parseFloat(query.waitAfterLoaded as string || '0'),
+			loadTimeout: parseInt(query.loadTimeout as string || '30000'),
+			waitUntil: (query.waitUntil as pup.PuppeteerLifeCycleEvent) || 'domcontentloaded'
+		};
+
+		const result = await renderPage(targetUrl, mode, options);
 
 		res.setHeader('Resulting-Status', result.status.toString());
 
@@ -201,7 +220,7 @@ async function handleRenderRequest(parsedUrl: url.UrlWithParsedQuery, req: http.
 		} else {
 			res.writeHead(200, {'Content-Type': 'application/json'});
 		}
-		res.end(result.data);
+		res.end(result.body);
 	} catch (error) {
 		res.writeHead(500, {'Content-Type': 'application/json'});
 		res.end(JSON.stringify({ error: 'Internal server error', message: (error as Error).message }));
@@ -216,7 +235,7 @@ const server = http.createServer(async (req, res) => {
 		await handleRenderRequest(parsedUrl, req, res);
 	} else {
 		res.writeHead(404, {'Content-Type': 'text/plain'});
-		res.end('Puppeteer webdriver server. Use /render endpoint with url, mode, and waitAfterLoaded parameters.');
+		res.end('Puppeteer webdriver server. Use /render endpoint with url, mode, waitAfterLoaded, and waitUntil parameters.');
 	}
 });
 
