@@ -381,6 +381,16 @@ async fn run_single_nondet(
     zelf: &std::sync::Arc<Supervisor>,
     task: NonDetVMTask,
 ) -> anyhow::Result<rt::vm::RunOk> {
+    match run_single_nondet_inner(zelf, task).await {
+        Ok(v) => Ok(v),
+        Err(e) => rt::errors::unwrap_vm_errors(e),
+    }
+}
+
+async fn run_single_nondet_inner(
+    zelf: &std::sync::Arc<Supervisor>,
+    task: NonDetVMTask,
+) -> anyhow::Result<rt::vm::RunOk> {
     let limiter = zelf.limiter.get(false).derived();
     let vm = spawn(zelf, task.task, limiter).await?;
     let vm = apply_contract_actions(zelf, vm).await?;

@@ -25,9 +25,17 @@ impl Drop for LimiterInner {
 
         log_debug!(id = self.id, consumed = consumed; "limiter drop");
 
-        self.data
+        self.release_no_consumed(consumed);
+    }
+}
+
+impl LimiterInner {
+    fn release_no_consumed(&self, delta: u32) {
+        #[allow(dead_code)]
+        let previous = self.data
             .remaining_memory
-            .fetch_add(consumed, std::sync::atomic::Ordering::SeqCst);
+            .fetch_add(delta, std::sync::atomic::Ordering::SeqCst);
+        assert!(previous.checked_add(delta).is_some());
     }
 }
 
@@ -78,10 +86,10 @@ impl Limiter {
     }
 
     pub fn release(&self, delta: u32) {
+        self.0.release_no_consumed(delta);
         self.0
-            .data
-            .remaining_memory
-            .fetch_add(delta, std::sync::atomic::Ordering::SeqCst);
+            .consumed_memory
+            .fetch_sub(delta, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn consume(&self, delta: u32) -> bool {
