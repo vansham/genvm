@@ -107,6 +107,7 @@ printf "BUILD_DIR: %s\nTARGET_DIR: %s\nCOVERAGE_DIR: %s\n" "$BUILD_DIR" "$TARGET
 export RUSTFLAGS='-C instrument-coverage'
 export LLVM_PROFILE_FILE="$COVERAGE_DIR/cov-%p-%16m.profraw"
 export AFL_FUZZER_LOOPCOUNT=20 # without it no coverage will be written!
+export AFL_NO_CFG_FUZZING=1
 
 LLVM_TOOLS_BIN="$(rustc --print target-libdir)/../bin"
 
@@ -180,7 +181,7 @@ do
                     FEATURES=""
                 fi
 
-                cargo afl build \
+                echo_and_run cargo afl build \
                     --target-dir "$TARGET_DIR" \
                     --example "fuzz-$name" \
                     $FEATURES
@@ -225,37 +226,12 @@ then
 else
     PROFILE_FILES="$PROFILE_FILES --object $BUILD_DIR/out/bin/genvm --object $BUILD_DIR/out/bin/genvm-modules"
 
-    ./build/out/bin/genvm-modules llm --die-with-parent &
-    LLM_JOB_ID=$!
-
-    ./build/out/bin/genvm-modules web --die-with-parent &
-    WEB_JOB_ID=$!
-
     if [ "$PRECOMPILE" == "true" ]
     then
         ./build/out/bin/genvm precompile
     fi
 
-    sleep 5
-
-    if !(kill -0 $LLM_JOB_ID)
-    then
-        echo "err: llm module died"
-        exit 1
-    fi
-
-    if !(kill -0 $WEB_JOB_ID)
-    then
-        echo "err: web module died"
-        exit 1
-    fi
-
-    python3 ./tests/runner/run.py --ci --gen-vm $(readlink -f ./build/out/executor/vTEST/bin/genvm)
-
-    kill -TERM $LLM_JOB_ID $WEB_JOB_ID
-
-    wait $LLM_JOB_ID
-    wait $WEB_JOB_ID
+    python3 ./tests/runner/run.py --ci --start-manager --start-modules
 fi
 
 if [ "$COVERAGE" == "true" ]

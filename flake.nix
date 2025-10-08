@@ -120,7 +120,7 @@
 									'';
 								};
 
-								packages-0 = with pkgs; [ bash xz zlib glibc git python312 coreutils which jq ];
+								packages-0 = with pkgs; [ bash xz zlib git python312 coreutils which jq stdenv.cc ];
 								packages-lint = with pkgs; [ pre-commit ];
 								packages-rust = [ custom-rust ];
 								packages-debug-test = with pkgs; [
@@ -137,6 +137,7 @@
 									llvmPackages.libllvm
 
 									python312Packages.jsonnet
+									pkgs.python312Packages.aiohttp
 									wabt
 								];
 								packages-py-test = with pkgs; [
@@ -167,6 +168,7 @@
 									packages = packages-0 ++ [
 										pkgs.python312
 										pkgs.python312Packages.jsonnet
+										pkgs.python312Packages.aiohttp
 										pkgs.wabt
 									];
 									shellHook = shell-hook-base;
