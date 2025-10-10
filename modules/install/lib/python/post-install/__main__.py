@@ -1,5 +1,6 @@
 import logging
 import os
+import shlex
 
 log_level_str = os.environ.get('LOGLEVEL', 'INFO').upper()
 log_levels = {
@@ -19,6 +20,7 @@ import subprocess
 import json
 
 import lief
+import yaml
 
 logging.info('Starting actual post-install script')
 
@@ -51,12 +53,8 @@ def runner_check_bytes(data: bytes, hash: str) -> bool:
 	return my_hash == hash
 
 
-executor_root_dir = Path(__file__).parent.parent.parent.parent
-logger.info(f'Executor root directory: {executor_root_dir}')
-
-installation_root_dir = executor_root_dir.parent.parent
-
-rpath_dir = installation_root_dir.joinpath('lib')
+genvm_root_dir = Path(__file__).parent.parent.parent.parent
+logger.info(f'Executor root directory: {genvm_root_dir}')
 
 _interpreter_path: Path | None = None
 
@@ -65,7 +63,7 @@ def get_interpreter_path():
 	global _interpreter_path
 	if _interpreter_path is not None:
 		return _interpreter_path
-	interpreter_path = installation_root_dir.joinpath('lib', 'libc.so').absolute()
+	interpreter_path = genvm_root_dir.joinpath('lib', 'libc.so').absolute()
 	logger.info(f'Interpreter path: {interpreter_path}')
 
 	if not interpreter_path.exists():
@@ -77,7 +75,7 @@ def get_interpreter_path():
 	return interpreter_path
 
 
-def patch_executable(path: Path):
+def patch_executable(path: Path, *, rpath_dir: list[Path]):
 	logger.info(f'Patching executable for {path}')
 	if not path.exists():
 		logger.warning(f'Path {path} does not exist, skipping patching')
@@ -129,20 +127,19 @@ def patch_executable(path: Path):
 
 		# Update RPATH for ELF
 		logger.info(f'Updating RPATH for ELF binary')
-		rpath_str = str(rpath_dir)
 
 		# Add or update RPATH entry
 		if binary.has(lief.ELF.DynamicEntry.TAG.RPATH):
 			# Update existing RPATH
 			rpath_entry = binary.get(lief.ELF.DynamicEntry.TAG.RPATH)
-			old_rpath = rpath_entry.value
-			rpath_entry.value = rpath_str
-			logger.info(f'Updated RPATH from "{old_rpath}" to: "{rpath_str}"')
+			old_rpath = str(rpath_entry.value)
+			rpath_entry.paths = [str(rpath) for rpath in rpath_dir]
+			logger.info(f'Updated RPATH from "{old_rpath}" to: "{rpath_entry.value}"')
 		else:
 			# Add new RPATH entry
-			rpath_entry = lief.ELF.DynamicEntryRpath([rpath_str])
+			rpath_entry = lief.ELF.DynamicEntryRpath([str(rpath) for rpath in rpath_dir])
 			binary.add(rpath_entry)
-			logger.info(f'Added new RPATH entry: "{rpath_str}"')
+			logger.info(f'Added new RPATH entry: "{rpath_dir}"')
 
 	# Handle Mach-O binaries
 	elif binary.format == lief.Binary.FORMATS.MACHO:
@@ -183,12 +180,12 @@ def patch_executable(path: Path):
 					logger.info(f'Replaced library reference: "{old_name}" -> "{cmd.name}"')
 
 		# Set RPATH for Mach-O
-		rpath_str = str(rpath_dir)
 
-		# Add RPATH load command
-		rpath_cmd = lief.MachO.RPathCommand.create(rpath_str)
-		binary.add(rpath_cmd)
-		logger.info(f'Added RPATH to Mach-O binary: "{rpath_str}"')
+		for rpath in rpath_dir:
+			rpath_str = str(rpath)
+			rpath_cmd = lief.MachO.RPathCommand.create(rpath_str)
+			binary.add(rpath_cmd)
+			logger.info(f'Added RPATH to Mach-O binary: "{rpath_str}"')
 
 	else:
 		logger.warning(f'Unsupported binary format for {path}: {binary.format}')
@@ -199,12 +196,22 @@ def patch_executable(path: Path):
 	logger.info(f'Successfully patched binary: {path}')
 
 
-logger.info('patching interpreters')
+def run_check_command(command: list[str | Path]):
+	env = os.environ.copy()
+	env['LLVM_PROFILE_FILE'] = '/dev/null'
+	logger.info(
+		f'>> '
+		+ ' '.join([shlex.quote(x if isinstance(x, str) else str(x)) for x in command])
+	)
+	subprocess.run(command, check=True, text=True, env=env)
 
-patch_executable(executor_root_dir.joinpath('bin', 'genvm'))
-patch_executable(installation_root_dir.joinpath('bin', 'genvm-modules'))
 
-logger.info('checking that all runners are present')
+modules_executable = genvm_root_dir.joinpath('bin', 'genvm-modules')
+patch_executable(modules_executable, rpath_dir=[genvm_root_dir.joinpath('lib')])
+
+run_check_command([modules_executable, '--version'])
+
+manifest = yaml.safe_load(genvm_root_dir.joinpath('data', 'manifest.yaml').read_text())
 
 
 def _load_registry(file: str | Path) -> dict[str, list[str]]:
@@ -230,55 +237,58 @@ def _load_registry(file: str | Path) -> dict[str, list[str]]:
 	return ret
 
 
-all_runners = _load_registry(executor_root_dir.joinpath('data', 'all.json'))
-runners_dir = installation_root_dir.joinpath('runners')
-
-
-def _object_gcs_path(name: str, hash: str) -> str:
-	return f'genvm_runners/{name}/{hash}.tar'
-
-
 def _download_single(name: str, hash: str) -> bytes:
-	url = f'https://storage.googleapis.com/gh-af/{_object_gcs_path(name, hash)}'
-	with urllib.request.urlopen(url) as f:
-		return f.read()
+	format_vars = {
+		'name': name,
+		'hash': hash,
+		'hash_0_2': hash[:2],
+		'hash_2_': hash[2:],
+	}
+	for url_template in manifest.get('runners_download_urls', []):
+		url = url_template.format(**format_vars)
+		try:
+			with urllib.request.urlopen(url) as f:
+				return f.read()
+		except Exception as e:
+			pass
+	raise RuntimeError(f'failed to download {name}:{hash} from all sources')
 
 
-for name, hashes in all_runners.items():
-	for hash in hashes:
-		cur_dst = runners_dir.joinpath(name, hash[:2], hash[2:] + '.tar')
-
-		if cur_dst.exists():
-			data = cur_dst.read_bytes()
-			if runner_check_bytes(data, hash):
-				logger.debug(f'already exists {name}:{hash}, skipping')
-				continue
-			logger.warning(f'exists corrupted {name}:{hash}, removing')
-			cur_dst.unlink()
-
-		logger.debug(f'not found {cur_dst}')
-		data = _download_single(name, hash)
-		if not runner_check_bytes(data, hash):
-			raise ValueError(f'hash mismatch for {name}:{hash}')
-
-		cur_dst.parent.mkdir(parents=True, exist_ok=True)
-		cur_dst.write_bytes(data)
-
-logger.info('checking installation')
-
-import shlex, os
-
-
-def run_check_command(command: list[str | Path]):
-	env = os.environ.copy()
-	env['LLVM_PROFILE_FILE'] = '/dev/null'
-	logger.info(
-		f'>> '
-		+ ' '.join([shlex.quote(x if isinstance(x, str) else str(x)) for x in command])
+for executor_version in manifest.get('executor_versions', {}).keys():
+	logger.info(f'Patching executor version {executor_version}')
+	executor_root_dir = genvm_root_dir.joinpath('executor', executor_version)
+	executor_executable = executor_root_dir.joinpath('bin', 'genvm')
+	if not executor_executable.exists():
+		logger.warning(f'Executor path {executor_executable} does not exist, skipping')
+		continue
+	patch_executable(
+		executor_executable,
+		rpath_dir=[genvm_root_dir.joinpath('lib'), executor_root_dir.joinpath('lib')],
 	)
-	subprocess.run(command, check=True, text=True, env=env)
+	run_check_command([executor_executable, '--version'])
 
+	logger.info(f'checking that all runners are present for {executor_version}')
+	all_runners = _load_registry(executor_root_dir.joinpath('data', 'all.json'))
+	runners_dir = executor_root_dir.joinpath('runners')
 
-run_check_command([executor_root_dir.joinpath('bin', 'genvm'), '--version'])
-run_check_command([installation_root_dir.joinpath('bin', 'genvm-modules'), '--version'])
-run_check_command([executor_root_dir.joinpath('bin', 'genvm'), 'precompile'])
+	for name, hashes in all_runners.items():
+		for hash in hashes:
+			cur_dst = runners_dir.joinpath(name, hash[:2], hash[2:] + '.tar')
+
+			if cur_dst.exists():
+				data = cur_dst.read_bytes()
+				if runner_check_bytes(data, hash):
+					logger.debug(f'already exists {name}:{hash}, skipping')
+					continue
+				logger.warning(f'exists corrupted {name}:{hash}, removing')
+				cur_dst.unlink()
+
+			logger.debug(f'not found {cur_dst}')
+			data = _download_single(name, hash)
+			if not runner_check_bytes(data, hash):
+				raise ValueError(f'hash mismatch for {name}:{hash}')
+
+			cur_dst.parent.mkdir(parents=True, exist_ok=True)
+			cur_dst.write_bytes(data)
+
+	run_check_command([executor_executable, 'precompile'])
