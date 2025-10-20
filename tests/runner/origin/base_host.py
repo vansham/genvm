@@ -131,8 +131,8 @@ async def get_pre_deployment_writes(
 		body = await resp.json()
 		ret = []
 		for k, v in body['writes']:
-			k = bytes(k)
-			v = bytes(v)
+			k = bytes(base64.b64decode(k))
+			v = bytes(base64.b64decode(v))
 			ret.append((k[:32], int.from_bytes(k[32:], byteorder='little'), v))
 		return ret
 

@@ -21,9 +21,8 @@ pub struct Config {
     #[serde(flatten)]
     pub base: genvm_common::BaseConfig,
     pub manifest_path: String,
-    #[cfg(debug_assertions)]
     #[serde(skip_deserializing)]
-    pub reroute_to_test: bool,
+    pub reroute_to: Arc<str>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -79,9 +78,8 @@ pub struct CliArgs {
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
-    #[cfg(debug_assertions)]
-    #[arg(long, default_value_t = false)]
-    pub reroute_to_test: bool,
+    #[arg(long, default_value = "")]
+    pub reroute_to: String,
 
     #[arg(long, default_value_t = false)]
     die_with_parent: bool,
@@ -366,10 +364,7 @@ pub fn entrypoint(args: CliArgs) -> Result<()> {
         config.manifest_path = manifest_path.clone();
     }
 
-    #[cfg(debug_assertions)]
-    {
-        config.reroute_to_test = args.reroute_to_test;
-    }
+    config.reroute_to = Arc::from(args.reroute_to.as_str());
 
     let config: sync::DArc<Config> = sync::DArc::new(config);
 

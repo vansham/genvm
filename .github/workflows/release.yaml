@@ -125,6 +125,7 @@ jobs:
     needs:
       - build-linux-amd64
       - build-universal
+      - gen-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -150,12 +151,13 @@ jobs:
           ./build/out/bin/post-install.py
       - name: Run stable tests
         run: |
-          nix develop .#mock-tests --command python3 ./tests/runner/run.py --start-manager --filter '^stable/'
+          nix develop .#mock-tests --command python3 ./tests/runner/run.py --executor-version ${{ needs.gen-tag.outputs.tag }} --start-manager --filter '^stable/'
 
   test-macos-arm64:
     needs:
       - build-macos-arm64
       - build-universal
+      - gen-tag
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -191,7 +193,7 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           pip install -r ./tests/runner/requirements.txt
-          python3 ./tests/runner/run.py --start-manager --filter '^stable/'
+          python3 ./tests/runner/run.py --executor-version ${{ needs.gen-tag.outputs.tag }} --start-manager --filter '^stable/'
 
   release-publish:
     needs:

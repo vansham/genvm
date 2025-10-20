@@ -439,8 +439,7 @@ pub async fn start_genvm(
     req: Request,
     _modules_lock: Box<dyn std::any::Any + Send + Sync>,
 ) -> anyhow::Result<(GenVMId, tokio::sync::oneshot::Receiver<()>)> {
-    #[cfg(debug_assertions)]
-    let reroute_to_test = full_ctx.config.reroute_to_test;
+    let reroute_to = full_ctx.config.reroute_to.clone();
 
     let version = full_ctx
         .ver_ctx
@@ -468,10 +467,9 @@ pub async fn start_genvm(
         version.major, version.minor, version.patch
     ));
 
-    #[cfg(debug_assertions)]
-    if reroute_to_test {
+    if !reroute_to.is_empty() {
         command_path.pop();
-        command_path.push("vTEST");
+        command_path.push(&*reroute_to);
     }
 
     command_path.push("bin");

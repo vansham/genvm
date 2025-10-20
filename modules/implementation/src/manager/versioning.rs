@@ -145,10 +145,9 @@ pub async fn detect_major_spec(
         execute_in.major, execute_in.minor, execute_in.patch
     ));
 
-    #[cfg(debug_assertions)]
-    if zelf.config.reroute_to_test {
+    if !zelf.config.reroute_to.is_empty() {
         genvm_path.pop();
-        genvm_path.push("vTEST");
+        genvm_path.push(&*zelf.config.reroute_to);
     }
     genvm_path.push("bin");
     genvm_path.push("genvm");

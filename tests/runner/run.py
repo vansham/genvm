@@ -85,6 +85,7 @@ class Config:
 		parser.add_argument('--no-sequential', default=False, action='store_true')
 		parser.add_argument('--start-manager', default=False, action='store_true')
 		parser.add_argument('--start-modules', default=False, action='store_true')
+		parser.add_argument('--executor-version', default='vTEST')
 		res = parser.parse_args()
 		if res.manager is None and not res.start_manager:
 			parser.error('--manager is required if --start-manager is not given')
@@ -143,7 +144,8 @@ if config.args.start_manager:
 			'manager',
 			'--port',
 			'3999',
-			'--reroute-to-test',
+			'--reroute-to',
+			config.args.executor_version,
 			'--die-with-parent',
 		],
 		stdin=subprocess.DEVNULL,
