@@ -3,6 +3,9 @@ import http from 'http';
 import url from 'url';
 import { Command } from 'commander';
 
+import * as logger from './logging.js';
+import * as browser from './browser.js';
+
 interface NavigationOptions {
 	waitUntil?: pup.PuppeteerLifeCycleEvent;
 	timeout?: number;
@@ -79,7 +82,7 @@ async function navigateToPage(page: pup.Page, targetUrl: string, options: Naviga
 
 		return { status: response.status(), response };
 	} catch (navigationError: any) {
-		console.log('Navigation Error', navigationError)
+		logger.log('error', 'navigation Error', navigationError)
 		const statusCode = getNavigationErrorStatus(navigationError);
 		const errorMessage = getNavigationErrorMessage(navigationError);
 		return { status: statusCode, error: errorMessage };
@@ -105,49 +108,24 @@ async function asScreenshot(page: pup.Page) {
 	return await page.screenshot();
 }
 
-// Global browser instance
-let browser: pup.Browser | null = null;
-let browserPromise: Promise<pup.Browser> | null = null;
-
-async function initBrowser() {
-	if (browser) {
-		return browser;
-	}
-
-	if (browserPromise) {
-		return await browserPromise;
-	}
-
-	browserPromise = puppeteer.launch({
-		headless: true,
-		args: [
-			'--no-sandbox',
-			'--disable-dev-shm-usage',
-			'--disable-accelerated-2d-canvas',
-			'--no-first-run',
-			'--no-zygote',
-			'--disable-gpu'
-		]
-	});
-
-	try {
-		browser = await browserPromise;
-		return browser;
-	} catch (error) {
-		browserPromise = null;
-		throw error;
-	}
-}
-
 function statusIsGood(status: number): boolean {
 	return status >= 200 && status < 300 || status === 304;
 }
 
 async function renderPage(targetUrl: string, mode: 'text' | 'html' | 'screenshot', options: RenderOptions = {}): Promise<{status: number, body: any}> {
+	const browserManager = await browser.BrowserManager.INSTANCE;
+	const browserInstance = browserManager.getBrowser();
+	try {
+		return renderPageWithBrowser(browserInstance.get(), targetUrl, mode, options);
+	} finally {
+		browserInstance.close();
+	}
+}
+
+async function renderPageWithBrowser(browserInstance: pup.Browser, targetUrl: string, mode: 'text' | 'html' | 'screenshot', options: RenderOptions = {}): Promise<{status: number, body: any}> {
 	const { loadTimeout = 30000, waitAfterLoaded = 0, waitUntil = 'domcontentloaded' } = options;
 
-	const browser = await initBrowser();
-	const page = await browser.newPage();
+	const page = await browserInstance.newPage();
 
 	try {
 		page.setViewport({ width: 1920/2, height: 1080/2 });
@@ -243,5 +221,5 @@ const server = http.createServer(async (req, res) => {
 const port = parseInt(options.port);
 
 server.listen(port, () => {
-	console.log(`Server running at http://localhost:${port}/`);
+	logger.log('info', 'server started', {port, 'url': `http://localhost:${port}/`});
 });
