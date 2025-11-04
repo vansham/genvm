@@ -34,7 +34,6 @@ class BrowserHolder {
 }
 
 async function newBrowser(): Promise<BrowserHolder> {
-	logger.log('debug', 'created new raw browser');
 	const realBrowser = await puppeteer.launch({
 		headless: true,
 		args: [
@@ -42,10 +41,17 @@ async function newBrowser(): Promise<BrowserHolder> {
 			'--disable-dev-shm-usage',
 			'--disable-accelerated-2d-canvas',
 			'--no-first-run',
+			'--single-process',
 			'--no-zygote',
 			'--disable-gpu'
 		]
 	});
+
+	logger.log('info', 'created new raw browser', {'pid': realBrowser.process()?.pid});
+
+	realBrowser.on('disconnected', () => {
+		logger.log('info', 'browser disconnected');
+	})
 
 	return new BrowserHolder(realBrowser);
 }

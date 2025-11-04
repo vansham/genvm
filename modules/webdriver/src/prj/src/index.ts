@@ -220,6 +220,8 @@ const server = http.createServer(async (req, res) => {
 
 const port = parseInt(options.port);
 
+import * as proc from 'process';
+
 server.listen(port, () => {
-	logger.log('info', 'server started', {port, 'url': `http://localhost:${port}/`});
+	logger.log('info', 'server started', {port, 'url': `http://localhost:${port}/`, pid: proc.pid});
 });
