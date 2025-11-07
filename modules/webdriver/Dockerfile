@@ -1,10 +1,5 @@
 FROM debian:12.10
 
-ENV TINI_VERSION=v0.19.0
-ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
-RUN chmod +x /tini
-ENTRYPOINT ["/tini", "--"]
-
 ENV PATH="/extra_path:${PATH}"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
@@ -49,6 +44,21 @@ RUN \
     true
 
 HEALTHCHECK --interval=5s --timeout=5s --retries=10 --start-period=3s CMD ["python3", "/src/healthcheck.py"]
+
+ENV TINI_VERSION=v0.19.0
+RUN \
+    set -ex && \
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        TINI_ARCH="tini-amd64"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        TINI_ARCH="tini-arm64"; \
+    else \
+        TINI_ARCH="tini"; \
+    fi && \
+    curl -fsSL -o /tini https://github.com/krallin/tini/releases/download/${TINI_VERSION}/${TINI_ARCH} && \
+    chmod +x /tini
+ENTRYPOINT ["/tini", "--"]
 
 COPY ./src /src
 
