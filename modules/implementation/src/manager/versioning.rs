@@ -3,6 +3,7 @@ use genvm_common::sync;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::manager::Config;
+use genvm_common::*;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct ExecutorVersion {
@@ -98,15 +99,12 @@ impl Ctx {
     ) -> Option<Version> {
         let lock = self.manifest.read().await;
 
-        let Some(mut ver) = lock
+        let mut ver = lock
             .executor_versions
             .iter()
             .filter(|(ver, ev)| ver.major == major && ev.available_after <= timestamp)
             .map(|(ver, _)| *ver)
-            .max()
-        else {
-            return None;
-        };
+            .max()?;
 
         loop {
             let mut next = ver;
@@ -169,18 +167,23 @@ pub async fn detect_major_spec(
             .write_all(data)
             .await
             .with_context(|| "failed_to_write_to_stdin")?;
+        stdin.flush().await?;
         std::mem::drop(stdin);
-        let mut res = String::new();
+        let mut res_str = String::new();
         stdout
             .with_context(|| "failed_to_open_stdout")?
-            .read_to_string(&mut res)
+            .read_to_string(&mut res_str)
             .await?;
 
-        let res = res.trim();
+        log_debug!(version_string = res_str; "read version pattern");
+
+        let res = res_str.trim();
         let res = res.strip_prefix("v").unwrap_or(res);
         let res = &res[..res.find('.').unwrap_or(res.len())];
 
         let res = res.parse::<u32>().unwrap_or(possible_major);
+
+        log_debug!(version_string = res_str, version = res; "version pattern parsed");
 
         Ok(res)
     };
