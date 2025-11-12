@@ -91,7 +91,7 @@ pub fn unwrap_vm_errors_fingerprint(
         log_warn!("no memories attached");
     }
 
-    log_debug!(fp:serde = fingerprint; "captured fingerprint");
+    log_debug!(fp:serde = fingerprint, frames = fingerprint.frames.len(); "captured fingerprint");
 
     Ok((unwrap_vm_errors(err)?, fingerprint))
 }
@@ -107,7 +107,7 @@ impl std::fmt::Display for UserError {
     }
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
 pub struct Frame {
     pub module_name: String,
     pub func: u32,
@@ -116,7 +116,7 @@ pub struct Frame {
 #[derive(Debug, serde::Serialize)]
 pub struct SingleMemoryFP(#[serde(with = "serde_bytes")] pub [u8; 32]);
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
 pub struct Fingerprint {
     pub frames: Vec<Frame>,
 

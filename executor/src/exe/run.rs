@@ -115,7 +115,7 @@ pub fn handle(args: Args, config: config::Config) -> Result<()> {
         metrics: genvm::Metrics::default(),
     });
 
-    let host = genvm::Host::new(&args.host, shared_data.gep(|x| &x.metrics.host))?;
+    let host = genvm::Host::connect(&args.host, shared_data.gep(|x| &x.metrics.host))?;
 
     let mut perm_size = 0;
     for perm in ["r", "w", "s", "c", "n"] {
@@ -167,7 +167,7 @@ pub fn handle(args: Args, config: config::Config) -> Result<()> {
                 }
             }
             Ok((res, _, nondet)) => {
-                println!("executed with `{res:?}`");
+                println!("executed with `{res:}`");
                 if let Some(disag) = nondet {
                     println!("nondet disagreement: {disag}");
                 }
