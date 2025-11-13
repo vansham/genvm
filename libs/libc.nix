@@ -10,7 +10,7 @@ let
 	};
 	aarch64-compiler-rt = builtins.fetchTarball {
 		url = "http://mirror.archlinuxarm.org/aarch64/extra/compiler-rt-21.1.5-1-aarch64.pkg.tar.xz";
-		sha256 = "1z3p3r8bbbhnh8sda5xp6n15n0593lbghrcn5p34mfifcriyr435";
+		sha256 = "08j9n9i7hw6y5bs9mmg0h90g4vr3pbqfijch1gzcwmndm7ndc33k";
 	};
 in pkgs.stdenvNoCC.mkDerivation {
 	name = "libc-${name-target}";

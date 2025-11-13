@@ -283,7 +283,7 @@ for executor_version in manifest.get('executor_versions', {}).keys():
 
 	logger.info(f'checking that all runners are present for {executor_version}')
 	all_runners = _load_registry(executor_root_dir.joinpath('data', 'all.json'))
-	runners_dir = executor_root_dir.joinpath('runners')
+	runners_dir = genvm_root_dir.joinpath('runners')
 
 	for name, hashes in all_runners.items():
 		for hash in hashes:
