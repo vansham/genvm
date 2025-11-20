@@ -1,5 +1,7 @@
 use std::{
+    ops::{Deref, DerefMut},
     os::fd::{AsRawFd, FromRawFd, IntoRawFd},
+    str::FromStr,
     sync::Arc,
 };
 
@@ -20,6 +22,7 @@ pub struct SingleGenVMContextDone {
     pub finished_at: chrono::DateTime<chrono::Utc>,
     pub stdout: String,
     pub stderr: String,
+    pub genvm_log: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
 }
 
 impl serde::Serialize for SingleGenVMContextDone {
@@ -33,6 +36,7 @@ impl serde::Serialize for SingleGenVMContextDone {
         state.serialize_field("finished_at", &self.finished_at.timestamp_millis())?;
         state.serialize_field("stdout", &self.stdout)?;
         state.serialize_field("stderr", &self.stderr)?;
+        state.serialize_field("genvm_log", &self.genvm_log)?;
         state.end()
     }
 }
@@ -47,6 +51,7 @@ struct SingleGenVMContext {
     stdout_stderr_sem: Arc<tokio::sync::Semaphore>,
     stdout: tokio::sync::OnceCell<String>,
     stderr: tokio::sync::OnceCell<String>,
+    log_capturer: Option<Arc<tokio::sync::Mutex<LogAppenderToValue>>>,
 
     process_handle: tokio::sync::Mutex<tokio::process::Child>,
     all_permits: crossbeam::atomic::AtomicCell<Option<Box<dyn std::any::Any + Send + Sync>>>,
@@ -144,6 +149,7 @@ impl Ctx {
         let Some(exec_ctx) = self.known_executions.get(&genvm_id) else {
             anyhow::bail!("GenVM with id {} not found", genvm_id);
         };
+        let exec_ctx = exec_ctx.value().clone();
 
         if exec_ctx.result.get().is_some() {
             return Ok(());
@@ -202,6 +208,7 @@ impl Ctx {
             log_trace!(genvm_id = genvm_id; "genvm status requested for unknown id");
             return None;
         };
+        let exec_ctx = exec_ctx.value().clone();
 
         let proc_check = self.check_proc(&exec_ctx).await;
         log_debug!(genvm_id = genvm_id, proc_exited = proc_check; "genvm status checked");
@@ -269,7 +276,7 @@ impl Ctx {
         exe_path.push("executor");
 
         Ok(Self {
-            known_executions: dashmap::DashMap::new(),
+            known_executions: Default::default(),
             next_genvm_id: std::sync::atomic::AtomicU64::new(1),
             permits: Arc::new(tokio::sync::Semaphore::new(permits)),
             max_permits: tokio::sync::Mutex::new(PermitsData {
@@ -286,12 +293,24 @@ impl Ctx {
 async fn gc_step(ctx: &sync::DArc<Ctx>) {
     let now = chrono::Utc::now();
 
-    for kv in ctx.known_executions.iter() {
-        if kv.value().strict_deadline < now {
-            log_warn!(genvm_id = *kv.key(); "genvm execution exceeded strict deadline, terminating");
-            let _ = ctx.graceful_shutdown(*kv.key(), 0).await;
+    // copy-out so that we don't hold the lock while doing async operations
+    let keys = ctx
+        .known_executions
+        .iter()
+        .map(|kv| *kv.key())
+        .collect::<Vec<_>>();
+
+    for key in keys {
+        let Some(val) = ctx.known_executions.get(&key) else {
+            continue;
+        };
+        let val = val.clone();
+
+        if val.strict_deadline < now {
+            log_warn!(genvm_id = key; "genvm execution exceeded strict deadline, terminating");
+            let _ = ctx.graceful_shutdown(key, 0).await;
         }
-        let _ = ctx.check_proc(kv.value()).await;
+        let _ = ctx.check_proc(&val).await;
     }
 
     // Remove old finished executions
@@ -348,9 +367,80 @@ fn default_max_execution_minutes() -> u64 {
     20
 }
 
-async fn read_log_pipe(reader_fd: std::os::unix::io::OwnedFd, cookie: u64) -> std::io::Result<()> {
-    let cookie = format!("{:x}", cookie);
+trait LogAppender {
+    async fn append_structured(
+        &mut self,
+        level: logger::Level,
+        data: serde_json::Map<String, serde_json::Value>,
+    );
+    async fn append_text(&mut self, serde_err: serde_json::Error, text: &str);
+}
 
+struct LogAppenderToLog(String);
+
+impl Deref for LogAppenderToLog {
+    type Target = Self;
+
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl DerefMut for LogAppenderToLog {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
+
+impl LogAppender for LogAppenderToLog {
+    #[inline(always)]
+    async fn append_structured(
+        &mut self,
+        level: logger::Level,
+        data: serde_json::Map<String, serde_json::Value>,
+    ) {
+        log_with_level!(level, log:serde = data, genvm_id = self.0; "genvm log");
+    }
+    #[inline(always)]
+    async fn append_text(&mut self, serde_err: serde_json::Error, text: &str) {
+        log_info!(error:err = serde_err, genvm_id = self.0, line = text; "genvm log raw");
+    }
+}
+
+struct LogAppenderToValue(Vec<serde_json::Map<String, serde_json::Value>>, GenVMId);
+
+impl LogAppender for LogAppenderToValue {
+    #[inline(always)]
+    async fn append_structured(
+        &mut self,
+        level: logger::Level,
+        mut data: serde_json::Map<String, serde_json::Value>,
+    ) {
+        log_debug!(reported_level = level, log:serde = data, genvm_id = self.1; "genvm log");
+
+        data.insert("level".to_owned(), level.to_string().into());
+        self.0.push(data);
+    }
+
+    #[inline(always)]
+    async fn append_text(&mut self, serde_err: serde_json::Error, text: &str) {
+        log_debug!(error:err = serde_err, genvm_id = self.1, line = text; "genvm log raw");
+
+        self.0.push(serde_json::Map::from_iter([
+            ("level".into(), serde_json::Value::String("info".into())),
+            (
+                "message".into(),
+                serde_json::Value::String("genvm log".into()),
+            ),
+            ("line".into(), text.to_owned().into()),
+        ]));
+    }
+}
+
+async fn read_log_pipe<LA: LogAppender>(
+    reader_fd: std::os::unix::io::OwnedFd,
+    mut sink: impl DerefMut<Target = LA>,
+) -> std::io::Result<()> {
     let file = unsafe { tokio::fs::File::from_raw_fd(reader_fd.into_raw_fd()) };
 
     let reader = tokio::io::BufReader::new(file);
@@ -363,34 +453,24 @@ async fn read_log_pipe(reader_fd: std::os::unix::io::OwnedFd, cookie: u64) -> st
             continue;
         }
         match serde_json::from_str(line) {
-            Ok::<serde_json::Map<String, serde_json::Value>, _>(log_record) => {
+            Ok::<serde_json::Map<String, serde_json::Value>, _>(mut log_record) => {
                 let level = log_record
-                    .get("level")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("info");
-                match level {
-                    "error" => {
-                        log_error!(log:serde = log_record, cookie = cookie; "genvm log");
-                    }
-                    "warn" => {
-                        log_warn!(log:serde = log_record, cookie = cookie; "genvm log");
-                    }
-                    "info" => {
-                        log_info!(log:serde = log_record, cookie = cookie; "genvm log");
-                    }
-                    "debug" => {
-                        log_debug!(log:serde = log_record, cookie = cookie; "genvm log");
-                    }
-                    "trace" => {
-                        log_trace!(log:serde = log_record, cookie = cookie; "genvm log");
-                    }
-                    _ => {
-                        log_info!(log:serde = log_record, cookie = cookie; "genvm log");
-                    }
-                }
+                    .remove("level")
+                    .map(|x| {
+                        if let serde_json::Value::String(s) = x {
+                            Some(s)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(None)
+                    .and_then(|x| logger::Level::from_str(&x).ok())
+                    .unwrap_or(logger::Level::Info);
+
+                sink.append_structured(level, log_record).await;
             }
             Err(e) => {
-                log_info!(error:err = e, line = line; "genvm log raw");
+                sink.append_text(e, line).await;
             }
         }
     }
@@ -453,10 +533,20 @@ impl Ctx {
                 log_debug!(id = exec.id, status = status; "stdout/stderr sem acquired");
                 let stdout = exec.stdout.get().map(|x| x.as_str()).unwrap_or("");
                 let stderr = exec.stderr.get().map(|x| x.as_str()).unwrap_or("");
+                let genvm_log = if let Some(genvm_log) = &exec.log_capturer {
+                    let mut data = Vec::new();
+                    std::mem::swap(&mut data, &mut genvm_log.lock().await.0);
+
+                    Some(data)
+                } else {
+                    None
+                };
+
                 if let Err(e) = exec.result.set(SingleGenVMContextDone {
                     finished_at: chrono::Utc::now(),
                     stdout: stdout.to_owned(),
                     stderr: stderr.to_owned(),
+                    genvm_log,
                 }) {
                     log_warn!(error:err = e; "error setting genvm result; it can happen rarely due to concurrency");
                 }
@@ -547,20 +637,30 @@ pub async fn start_genvm(
     proc.arg("--message");
     proc.arg(serde_json::to_string(&req.message)?);
 
-    let cookie = ctx
-        .next_genvm_id
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    proc.arg(format!("--cookie={:x}", cookie));
+    proc.arg(format!("--cookie={}", genvm_id.0));
 
-    tokio::spawn(read_log_pipe(read_fd, cookie));
-
-    if req.capture_output {
+    let log_capturer = if req.capture_output {
         proc.stdout(std::process::Stdio::piped());
         proc.stderr(std::process::Stdio::piped());
+
+        let logger = Arc::new(tokio::sync::Mutex::new(LogAppenderToValue(
+            Vec::new(),
+            genvm_id,
+        )));
+        let l = logger.clone().lock_owned().await;
+        tokio::spawn(read_log_pipe(read_fd, l));
+
+        Some(logger)
     } else {
         proc.stdout(std::process::Stdio::null());
         proc.stderr(std::process::Stdio::null());
-    }
+
+        tokio::spawn(read_log_pipe(
+            read_fd,
+            LogAppenderToLog(format!("{}", genvm_id.0)),
+        ));
+        None
+    };
 
     let mut child = proc.spawn()?;
 
@@ -589,6 +689,7 @@ pub async fn start_genvm(
         stdout_stderr_sem,
         stdout: tokio::sync::OnceCell::new(),
         stderr: tokio::sync::OnceCell::new(),
+        log_capturer,
 
         all_permits: crossbeam::atomic::AtomicCell::new(Some(Box::new(all_resources))),
     });
