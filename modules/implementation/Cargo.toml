@@ -22,7 +22,7 @@ genvm-common = { path = "../../executor/common" }
 anyhow = { version = "1.0.98", features = [] }
 serde = { version = "1.0.219", features = ["rc"]}
 serde_derive = "1.0.219"
-serde_json = "1.0.140"
+serde_json = { version = "1.0.140", features = ["preserve_order"] }
 tokio = { version = "1.44.1", features = ["rt", "rt-multi-thread", "net", "time", "macros", "sync", "process"], default-features = false}
 reqwest = { version = "0.12.15", features = ["cookies", "gzip", "rustls-tls", "charset", "http2", "json"], default-features = false}
 serde_yaml = "0.9.34"
@@ -37,7 +37,7 @@ tokio-tungstenite = "0.26.2"
 futures-util = "0.3.31"
 base64 = "0.22.1"
 serde_bytes = "0.11.17"
-rand = "0.9.1"
+rand = { version = "0.9.1", features = ["std_rng"] }
 chrono = { version = "0.4.41", default-features = false, features = ["clock", "std", "serde"] }
 ring = { version = "0.17.14", features = ["std"] }
 url = { version = "2.5.4", features = ["serde"] }
@@ -48,11 +48,17 @@ image = { version = "0.25.8", features = ["png", "jpeg", "webp"]}
 warp = "0.3.7"
 bytes = "1.10.1"
 libc = "0.2"
-dashmap = "6.1.0"
 sha3 = "0.10"
+papaya = "0.2.3"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 sysinfo = { version = "0.36", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 afl = { version = "0.15.18", features = ["no_cfg_fuzzing"] }
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+split-debuginfo = "packed"
+strip = "none"

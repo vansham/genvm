@@ -1,28 +1,25 @@
 use std::{
     ops::{Deref, DerefMut},
-    os::fd::{AsRawFd, FromRawFd, IntoRawFd},
+    os::fd::{AsRawFd, FromRawFd},
+    pin::Pin,
     str::FromStr,
     sync::Arc,
 };
 
 use genvm_common::*;
+use genvm_modules::common::LoggerWithId;
 use tokio::io::AsyncBufReadExt;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Copy)]
-pub struct GenVMId(pub u64);
+pub use genvm_modules_interfaces::GenVMId;
 
-impl std::fmt::Display for GenVMId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+use crate::common::{LogSink, LogSinkElement, GENVM_BY_ID_LOGGER};
 
 #[derive(Debug)]
 pub struct SingleGenVMContextDone {
     pub finished_at: chrono::DateTime<chrono::Utc>,
     pub stdout: String,
     pub stderr: String,
-    pub genvm_log: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
+    pub genvm_log: Vec<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl serde::Serialize for SingleGenVMContextDone {
@@ -51,7 +48,7 @@ struct SingleGenVMContext {
     stdout_stderr_sem: Arc<tokio::sync::Semaphore>,
     stdout: tokio::sync::OnceCell<String>,
     stderr: tokio::sync::OnceCell<String>,
-    log_capturer: Option<Arc<tokio::sync::Mutex<LogAppenderToValue>>>,
+    log_sink: LogSink,
 
     process_handle: tokio::sync::Mutex<tokio::process::Child>,
     all_permits: crossbeam::atomic::AtomicCell<Option<Box<dyn std::any::Any + Send + Sync>>>,
@@ -64,7 +61,7 @@ struct PermitsData {
 }
 
 pub struct Ctx {
-    known_executions: dashmap::DashMap<GenVMId, sync::DArc<SingleGenVMContext>>,
+    known_executions: papaya::HashMap<GenVMId, sync::DArc<SingleGenVMContext>>,
     next_genvm_id: std::sync::atomic::AtomicU64,
     pub permits: Arc<tokio::sync::Semaphore>,
     max_permits: tokio::sync::Mutex<PermitsData>,
@@ -85,14 +82,19 @@ impl Ctx {
     pub fn status_executions(&self) -> serde_json::Value {
         let mut ret = serde_json::Map::new();
 
-        for kv in self.known_executions.iter() {
-            let genvm_id = kv.key();
-            let exec_ctx = kv.value();
+        for (genvm_id, exec_ctx) in self.known_executions.pin().iter() {
+            let result = if let Some(result) = exec_ctx.result.get() {
+                serde_json::json!({
+                    "finished_at": result.finished_at.to_rfc3339(),
+                })
+            } else {
+                serde_json::Value::Null
+            };
 
             ret.insert(
                 genvm_id.to_string(),
                 serde_json::json!({
-                    "has_result": exec_ctx.result.initialized(),
+                    "result": result,
                     "version": exec_ctx.version,
                     "started_at": exec_ctx.started_at.to_rfc3339(),
                     "strict_deadline": exec_ctx.strict_deadline.to_rfc3339()
@@ -146,10 +148,9 @@ impl Ctx {
         genvm_id: GenVMId,
         wait_timeout_ms: u64,
     ) -> anyhow::Result<()> {
-        let Some(exec_ctx) = self.known_executions.get(&genvm_id) else {
+        let Some(exec_ctx) = self.known_executions.pin().get(&genvm_id).cloned() else {
             anyhow::bail!("GenVM with id {} not found", genvm_id);
         };
-        let exec_ctx = exec_ctx.value().clone();
 
         if exec_ctx.result.get().is_some() {
             return Ok(());
@@ -158,11 +159,11 @@ impl Ctx {
         let mut child = exec_ctx.process_handle.lock().await;
 
         if let Ok(Some(_)) = child.try_wait() {
-            log_trace!(genvm_id = genvm_id; "GenVM process already exited");
+            log_trace_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "GenVM process already exited");
             return Ok(());
         }
 
-        log_debug!(genvm_id = genvm_id; "sending SIGTERM to GenVM process");
+        log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "sending SIGTERM to GenVM process");
 
         if let Some(pid) = child.id() {
             unsafe {
@@ -176,7 +177,7 @@ impl Ctx {
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => {
-                    log_info!(genvm_id = genvm_id; "GenVM process terminated gracefully");
+                    log_info_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "GenVM process terminated gracefully");
                     return Ok(());
                 }
                 Ok(None) => {
@@ -186,13 +187,13 @@ impl Ctx {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
                 Err(e) => {
-                    log_error!(genvm_id = genvm_id, error:err = e; "error checking process status");
+                    log_error_into!(&LoggerWithId, genvm_id:id = genvm_id.0, error:err = e; "error checking process status");
                     anyhow::bail!("failed to check process status: {}", e);
                 }
             }
         }
 
-        log_warn!(genvm_id = genvm_id; "GenVM process did not terminate gracefully, sending SIGKILL");
+        log_warn_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "GenVM process did not terminate gracefully, sending SIGKILL");
 
         let _ = child.start_kill();
         child.wait().await?;
@@ -204,14 +205,13 @@ impl Ctx {
         &self,
         genvm_id: GenVMId,
     ) -> Option<sync::DArc<SingleGenVMContextDone>> {
-        let Some(exec_ctx) = self.known_executions.get(&genvm_id) else {
-            log_trace!(genvm_id = genvm_id; "genvm status requested for unknown id");
+        let Some(exec_ctx) = self.known_executions.pin().get(&genvm_id).cloned() else {
+            log_trace_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "genvm status requested for unknown id");
             return None;
         };
-        let exec_ctx = exec_ctx.value().clone();
 
         let proc_check = self.check_proc(&exec_ctx).await;
-        log_debug!(genvm_id = genvm_id, proc_exited = proc_check; "genvm status checked");
+        log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0, proc_exited = proc_check; "genvm status checked");
 
         exec_ctx
             .clone()
@@ -226,7 +226,7 @@ impl Ctx {
     ) -> Option<sync::DArc<SingleGenVMContextDone>> {
         let res = self.get_genvm_status(genvm_id).await;
         if res.is_some() {
-            self.known_executions.remove(&genvm_id);
+            self.known_executions.pin().remove(&genvm_id);
         }
 
         res
@@ -296,31 +296,31 @@ async fn gc_step(ctx: &sync::DArc<Ctx>) {
     // copy-out so that we don't hold the lock while doing async operations
     let keys = ctx
         .known_executions
+        .pin()
         .iter()
-        .map(|kv| *kv.key())
+        .map(|kv| *kv.0)
         .collect::<Vec<_>>();
 
     for key in keys {
-        let Some(val) = ctx.known_executions.get(&key) else {
+        let Some(val) = ctx.known_executions.pin().get(&key).cloned() else {
             continue;
         };
-        let val = val.clone();
 
         if val.strict_deadline < now {
-            log_warn!(genvm_id = key; "genvm execution exceeded strict deadline, terminating");
+            log_warn_into!(&LoggerWithId, genvm_id:id = key.0; "genvm execution exceeded strict deadline, terminating");
             let _ = ctx.graceful_shutdown(key, 0).await;
         }
         let _ = ctx.check_proc(&val).await;
     }
 
     // Remove old finished executions
-    ctx.known_executions.retain(|k, v| {
+    ctx.known_executions.pin().retain(|k, v| {
         let Some(result) = v.result.get() else {
             return true;
         };
         let passed = now.signed_duration_since(result.finished_at);
-        if passed > chrono::Duration::seconds(60) || result.finished_at < now {
-            log_warn!(genvm_id = *k; "removing zombie genvm execution context");
+        if passed > chrono::Duration::seconds(60) {
+            log_warn_into!(&LoggerWithId, genvm_id:id = k.0; "removing zombie genvm execution context");
             return false;
         }
         true
@@ -356,6 +356,7 @@ pub struct Request {
     pub capture_output: bool,
     #[serde(default = "default_max_execution_minutes")]
     pub max_execution_minutes: u64,
+    pub storage_pages: u64,
     pub host_data: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub host: String,
@@ -376,7 +377,7 @@ trait LogAppender {
     async fn append_text(&mut self, serde_err: serde_json::Error, text: &str);
 }
 
-struct LogAppenderToLog(String);
+struct LogAppenderToLog(GenVMId);
 
 impl Deref for LogAppenderToLog {
     type Target = Self;
@@ -399,15 +400,15 @@ impl LogAppender for LogAppenderToLog {
         level: logger::Level,
         data: serde_json::Map<String, serde_json::Value>,
     ) {
-        log_with_level!(level, log:serde = data, genvm_id = self.0; "genvm log");
+        log_with_level_into!(level, &LoggerWithId, log:serde = data, genvm_id:id = self.0.0; "genvm log");
     }
     #[inline(always)]
     async fn append_text(&mut self, serde_err: serde_json::Error, text: &str) {
-        log_info!(error:err = serde_err, genvm_id = self.0, line = text; "genvm log raw");
+        log_info_into!(&LoggerWithId, error:err = serde_err, genvm_id:id = self.0.0, line = text; "genvm log raw");
     }
 }
 
-struct LogAppenderToValue(Vec<serde_json::Map<String, serde_json::Value>>, GenVMId);
+struct LogAppenderToValue(LogSink, GenVMId);
 
 impl LogAppender for LogAppenderToValue {
     #[inline(always)]
@@ -416,24 +417,49 @@ impl LogAppender for LogAppenderToValue {
         level: logger::Level,
         mut data: serde_json::Map<String, serde_json::Value>,
     ) {
-        log_debug!(reported_level = level, log:serde = data, genvm_id = self.1; "genvm log");
+        log_trace!(log:serde = data; "genvm log");
 
         data.insert("level".to_owned(), level.to_string().into());
-        self.0.push(data);
+
+        self.0.push(LogSinkElement::Map(data));
     }
 
     #[inline(always)]
-    async fn append_text(&mut self, serde_err: serde_json::Error, text: &str) {
-        log_debug!(error:err = serde_err, genvm_id = self.1, line = text; "genvm log raw");
+    async fn append_text(&mut self, _serde_err: serde_json::Error, text: &str) {
+        self.0.push(LogSinkElement::Line(text.to_owned()));
+    }
+}
 
-        self.0.push(serde_json::Map::from_iter([
-            ("level".into(), serde_json::Value::String("info".into())),
-            (
-                "message".into(),
-                serde_json::Value::String("genvm log".into()),
-            ),
-            ("line".into(), text.to_owned().into()),
-        ]));
+pub struct AsyncCustomFD(tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>);
+
+impl tokio::io::AsyncRead for AsyncCustomFD {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        loop {
+            let mut guard = std::task::ready!(self.0.poll_read_ready(cx))?;
+
+            let unfilled = buf.initialize_unfilled();
+            match guard.try_io(|inner| {
+                let fd = inner.get_ref().as_raw_fd();
+                let result =
+                    unsafe { libc::read(fd, unfilled.as_mut_ptr().cast(), unfilled.len()) };
+                if result == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(result as usize)
+                }
+            }) {
+                Ok(Ok(len)) => {
+                    buf.advance(len);
+                    return std::task::Poll::Ready(Ok(()));
+                }
+                Ok(Err(err)) => return std::task::Poll::Ready(Err(err)),
+                Err(_would_block) => continue,
+            }
+        }
     }
 }
 
@@ -441,7 +467,7 @@ async fn read_log_pipe<LA: LogAppender>(
     reader_fd: std::os::unix::io::OwnedFd,
     mut sink: impl DerefMut<Target = LA>,
 ) -> std::io::Result<()> {
-    let file = unsafe { tokio::fs::File::from_raw_fd(reader_fd.into_raw_fd()) };
+    let file = AsyncCustomFD(tokio::io::unix::AsyncFd::new(reader_fd)?);
 
     let reader = tokio::io::BufReader::new(file);
 
@@ -528,18 +554,23 @@ impl Ctx {
         match proc.try_wait() {
             Ok(Some(status)) => {
                 log_debug!(id = exec.id, status = status; "genvm exited");
+
+                let _ = sync::DropGuard::new(|| {
+                    GENVM_BY_ID_LOGGER.pin().remove(&exec.id);
+                });
+
                 exec.all_permits.store(None); // drop all resources it owns
                 let _ = exec.stdout_stderr_sem.acquire_many(2).await; // wait for stderr/stdout to be fully read
                 log_debug!(id = exec.id, status = status; "stdout/stderr sem acquired");
                 let stdout = exec.stdout.get().map(|x| x.as_str()).unwrap_or("");
                 let stderr = exec.stderr.get().map(|x| x.as_str()).unwrap_or("");
-                let genvm_log = if let Some(genvm_log) = &exec.log_capturer {
-                    let mut data = Vec::new();
-                    std::mem::swap(&mut data, &mut genvm_log.lock().await.0);
 
-                    Some(data)
-                } else {
-                    None
+                let genvm_log = {
+                    let mut as_vec = Vec::new();
+                    while let Some(data) = exec.log_sink.pop() {
+                        as_vec.push(data.into_json());
+                    }
+                    as_vec
                 };
 
                 if let Err(e) = exec.result.set(SingleGenVMContextDone {
@@ -587,6 +618,12 @@ pub async fn start_genvm(
         ctx.permits.clone().acquire_many_owned(2).await?
     };
 
+    let log_sink: LogSink = Arc::new(Default::default());
+    GENVM_BY_ID_LOGGER.pin().insert(genvm_id, log_sink.clone());
+    let log_sink_guard = sync::DropGuard::new(|| {
+        GENVM_BY_ID_LOGGER.pin().remove(&genvm_id);
+    });
+
     let mut command_path = ctx.executors_path.clone();
 
     let version_str_owned = format!("v{}.{}.{}", version.major, version.minor, version.patch);
@@ -599,7 +636,7 @@ pub async fn start_genvm(
     command_path.push("bin");
     command_path.push("genvm");
 
-    log_debug!(genvm_id = genvm_id, exe:? = command_path, version:? = version; "genvm path");
+    log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0, exe:? = command_path, version:? = version; "genvm path");
 
     let mut proc = tokio::process::Command::new(command_path);
 
@@ -612,7 +649,12 @@ pub async fn start_genvm(
     let read_fd = read_right_fd[0];
     let write_fd = read_right_fd[1];
 
-    let _ = unsafe { libc::fcntl(read_fd, libc::F_SETFD, libc::O_CLOEXEC) };
+    unsafe {
+        let flags = libc::fcntl(read_fd, libc::F_GETFL, 0);
+        libc::fcntl(read_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        let fd_flags = libc::fcntl(read_fd, libc::F_GETFD, 0);
+        libc::fcntl(read_fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC);
+    };
 
     let read_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(read_fd) };
     let write_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(write_fd) };
@@ -631,40 +673,37 @@ pub async fn start_genvm(
     proc.arg("--host-data");
     proc.arg(&req.host_data);
 
+    proc.arg("--storage-pages");
+    proc.arg(req.storage_pages.to_string());
+
     proc.arg("--host");
     proc.arg(&req.host);
 
     proc.arg("--message");
     proc.arg(serde_json::to_string(&req.message)?);
 
-    proc.arg(format!("--cookie={}", genvm_id.0));
+    proc.arg(format!("--genvm-id={}", genvm_id.0));
 
-    let log_capturer = if req.capture_output {
+    if req.capture_output {
         proc.stdout(std::process::Stdio::piped());
         proc.stderr(std::process::Stdio::piped());
 
         let logger = Arc::new(tokio::sync::Mutex::new(LogAppenderToValue(
-            Vec::new(),
+            log_sink.clone(),
             genvm_id,
         )));
         let l = logger.clone().lock_owned().await;
         tokio::spawn(read_log_pipe(read_fd, l));
-
-        Some(logger)
     } else {
         proc.stdout(std::process::Stdio::null());
         proc.stderr(std::process::Stdio::null());
 
-        tokio::spawn(read_log_pipe(
-            read_fd,
-            LogAppenderToLog(format!("{}", genvm_id.0)),
-        ));
-        None
+        tokio::spawn(read_log_pipe(read_fd, LogAppenderToLog(genvm_id)));
     };
 
     let mut child = proc.spawn()?;
 
-    log_debug!(genvm_id = genvm_id, pid:? = child.id(); "genvm process started");
+    log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0, pid:? = child.id(); "genvm process started");
 
     let stdout_stderr_sem = Arc::new(tokio::sync::Semaphore::new(2));
 
@@ -689,7 +728,7 @@ pub async fn start_genvm(
         stdout_stderr_sem,
         stdout: tokio::sync::OnceCell::new(),
         stderr: tokio::sync::OnceCell::new(),
-        log_capturer,
+        log_sink,
 
         all_permits: crossbeam::atomic::AtomicCell::new(Some(Box::new(all_resources))),
     });
@@ -701,7 +740,10 @@ pub async fn start_genvm(
         tokio::spawn(pipe_read(stderr, exec_ctx.gep(|x| &x.stderr), stderr_perm));
     }
 
-    ctx.known_executions.insert(genvm_id, exec_ctx.clone());
+    ctx.known_executions
+        .pin()
+        .insert(genvm_id, exec_ctx.clone());
+    log_sink_guard.forget();
 
     Ok((genvm_id, rx))
 }

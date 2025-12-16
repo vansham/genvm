@@ -7,7 +7,7 @@ use genvm_common::*;
 
 use crate::{
     config, host, public_abi,
-    rt::{self, DetNondet},
+    rt::{self, memlimiter, DetNondet},
     runners, wasi,
 };
 
@@ -22,11 +22,12 @@ struct WasmModuleCache {
 pub struct NonDetVMTask {
     pub task: wasi::genlayer_sdk::SingleVMData,
     pub call_no: u32,
+    pub tasks_done: Arc<tokio::sync::Notify>,
 }
 
 impl NonDetVMTask {
     pub async fn run_now(self, sup: &Arc<Supervisor>) -> anyhow::Result<rt::vm::RunOk> {
-        run_single_nondet(sup, self).await
+        run_single_nondet(sup, self, sup.limiter.get(false).derived()).await
     }
 }
 
@@ -39,10 +40,11 @@ impl std::ops::Drop for VMCountDecrementer {
 }
 
 struct NondetQueue {
-    sender: tokio::sync::mpsc::Sender<sync::Lock<NonDetVMTask, VMCountDecrementer>>,
+    sender: tokio_mpmc::Sender<sync::Lock<NonDetVMTask, VMCountDecrementer>>,
+    receiver: tokio_mpmc::Receiver<sync::Lock<NonDetVMTask, VMCountDecrementer>>,
     nondet_call_disagree: std::sync::atomic::AtomicU32,
     vm_countdown: genvm_common::sync::Waiter,
-    tasks_loop_done: tokio::sync::Notify,
+    tasks_loop_done: Arc<tokio::sync::RwLock<()>>,
     encountered_error: crossbeam::atomic::AtomicCell<Option<anyhow::Error>>,
 }
 
@@ -69,7 +71,7 @@ pub struct Supervisor {
     wasm_mod_cache: WasmModuleCache,
 
     pub(crate) engines: rt::DetNondet<wasmtime::Engine>,
-    pub(crate) host: tokio::sync::Mutex<host::Host>,
+    pub(crate) host: Arc<tokio::sync::Mutex<host::Host>>,
 }
 
 pub fn create_engines(
@@ -122,9 +124,20 @@ pub fn create_engines(
 }
 
 pub async fn await_nondet_vms(zelf: &Arc<Supervisor>) -> anyhow::Result<Option<u32>> {
+    zelf.queue.sender.close(); // no more tasks can be submitted after this point
+
     zelf.queue.vm_countdown.decrement();
 
-    zelf.queue.tasks_loop_done.notified().await;
+    if !zelf.queue.receiver.is_empty() {
+        let read_permit = zelf.queue.tasks_loop_done.clone().try_read_owned().unwrap();
+        let limiter = memlimiter::Limiter::new("nondet-secondary");
+        nondet_vm_processor(zelf.clone(), read_permit, limiter).await;
+    }
+
+    let _ = zelf.queue.tasks_loop_done.write().await;
+
+    log_debug!("all nondet workers done");
+
     if let Some(err) = zelf.queue.encountered_error.take() {
         return Err(err);
     }
@@ -145,13 +158,23 @@ pub async fn submit_nondet_vm_task(zelf: &Arc<Supervisor>, task: NonDetVMTask) {
 
     zelf.queue.vm_countdown.increment();
     let tok = VMCountDecrementer(zelf.clone());
-    let permit = zelf.queue.sender.reserve().await.unwrap();
-    permit.send(sync::Lock::new(task, tok));
+    let _ = zelf
+        .queue
+        .sender
+        .send(sync::Lock::new(task, tok))
+        .await
+        .inspect_err(|e| {
+            log_error!(error:err = e; "failed to submit nondet vm task");
+        });
 
     log_debug!(call_no = call_no; "nondet vm task submitted");
 }
 
 impl Supervisor {
+    pub fn get_storage_limiter(&self) -> rt::vm::storage::Limiter {
+        rt::vm::storage::Limiter::new(self.shared_data.gep(|x| &x.storage_pages_limit))
+    }
+
     pub fn start(
         config: &config::Config,
         ctor: Ctor,
@@ -186,7 +209,7 @@ impl Supervisor {
             Ok(())
         })?;
 
-        let (sender, receiver) = tokio::sync::mpsc::channel(100);
+        let (sender, receiver) = tokio_mpmc::channel(100);
 
         let debug_mode = ctor.shared_data.debug_mode;
 
@@ -199,10 +222,11 @@ impl Supervisor {
             balances: dashmap::DashMap::new(),
             queue: NondetQueue {
                 sender,
+                receiver,
                 encountered_error: crossbeam::atomic::AtomicCell::new(None),
                 nondet_call_disagree: std::sync::atomic::AtomicU32::new(u32::MAX),
                 vm_countdown: genvm_common::sync::Waiter::new(),
-                tasks_loop_done: tokio::sync::Notify::new(),
+                tasks_loop_done: Arc::new(tokio::sync::RwLock::new(())),
             },
             runner_cache: runners::cache::Reader::new(
                 std::path::Path::new(&config.runners_dir),
@@ -213,11 +237,17 @@ impl Supervisor {
                 cache_dir: my_cache_dir,
                 wasm_modules_cache: sync::CacheMap::new(),
             },
-            host: tokio::sync::Mutex::new(host),
+            host: Arc::new(tokio::sync::Mutex::new(host)),
             engines,
         });
 
-        tokio::spawn(nondet_vm_processor(zelf.clone(), receiver));
+        let read_permit = zelf.queue.tasks_loop_done.clone().try_read_owned().unwrap();
+        let main_nondet_limiter = zelf.limiter.get(false).derived();
+        tokio::spawn(nondet_vm_processor(
+            zelf.clone(),
+            read_permit,
+            main_nondet_limiter,
+        ));
 
         Ok(zelf)
     }
@@ -238,9 +268,7 @@ pub async fn spawn(
         engine,
         rt::vm::WasmtimeStoreData {
             limits: limiter.clone(),
-            genlayer_ctx: std::sync::Arc::new(std::sync::Mutex::new(wasi::Context::new(
-                vm, limiter,
-            )?)),
+            genlayer_ctx: wasi::Context::new(vm, limiter)?,
             supervisor: zelf.clone(),
         },
         wasmtime::GenVMCtx {
@@ -274,13 +302,15 @@ pub async fn apply_contract_actions(
     zelf: &std::sync::Arc<Supervisor>,
     mut vm: rt::vm::VM<()>,
 ) -> anyhow::Result<rt::vm::VM<wasmtime::Instance>> {
-    let (contract_address, datetime) = {
-        let lock = vm.vm_base.store.data().genlayer_ctx.lock().unwrap();
-        (
-            lock.genlayer_sdk.data.message_data.contract_address,
-            lock.genlayer_sdk.data.message_data.datetime,
-        )
-    };
+    let contract_address = vm
+        .vm_base
+        .store
+        .data()
+        .genlayer_ctx
+        .genlayer_sdk
+        .data
+        .message_data
+        .contract_address;
 
     let contract_id = runners::get_runner_of_contract(contract_address);
 
@@ -291,15 +321,11 @@ pub async fn apply_contract_actions(
         .get_or_create(
             contract_id,
             || async {
-                let mut host = zelf.host.lock().await;
-
-                let code = host.get_code(
+                let code = zelf.host.lock().await.get_code(
                     vm.vm_base.config_copy.state_mode,
                     contract_address,
                     &limiter,
                 )?;
-
-                std::mem::drop(host);
 
                 runners::parse(util::SharedBytes::new(code))
             },
@@ -313,27 +339,6 @@ pub async fn apply_contract_actions(
     let version = arch.get_version().map_err(|e| {
         rt::errors::VMError::wrap(public_abi::VmError::InvalidContract.value().to_owned(), e)
     })?;
-
-    //self.shared_data.
-    let transaction_ts = datetime.timestamp() as u64;
-    let max_version_index =
-        match crate::version_timestamps::DATA.binary_search_by_key(&transaction_ts, |x| x.0) {
-            Ok(index) => index,
-            Err(0) => 0,
-            Err(index) => index - 1,
-        };
-
-    if version > crate::version_timestamps::DATA[max_version_index].1 {
-        log_info!(
-            version = version,
-            max_version = crate::version_timestamps::DATA[max_version_index].1,
-            requested_timestamp = transaction_ts;
-            "version is too big, rejecting"
-        );
-        return Err(
-            rt::errors::VMError(public_abi::VmError::VersionTooBig.value().into(), None).into(),
-        );
-    }
 
     vm.vm_base
         .store
@@ -380,8 +385,9 @@ pub async fn apply_contract_actions(
 async fn run_single_nondet(
     zelf: &std::sync::Arc<Supervisor>,
     task: NonDetVMTask,
+    limiter: memlimiter::Limiter,
 ) -> anyhow::Result<rt::vm::RunOk> {
-    match run_single_nondet_inner(zelf, task).await {
+    match run_single_nondet_inner(zelf, task, limiter).await {
         Ok(v) => Ok(v),
         Err(e) => rt::errors::unwrap_vm_errors(e),
     }
@@ -390,18 +396,17 @@ async fn run_single_nondet(
 async fn run_single_nondet_inner(
     zelf: &std::sync::Arc<Supervisor>,
     task: NonDetVMTask,
+    limiter: memlimiter::Limiter,
 ) -> anyhow::Result<rt::vm::RunOk> {
-    let limiter = zelf.limiter.get(false).derived();
     let vm = spawn(zelf, task.task, limiter).await?;
     let vm = apply_contract_actions(zelf, vm).await?;
-    vm.run().await.map(|x| x.0)
+    vm.run().await.map(|x| x.run_ok)
 }
 
 async fn nondet_vm_processor(
     zelf: std::sync::Arc<Supervisor>,
-    mut nondet_validator_queue_receiver: tokio::sync::mpsc::Receiver<
-        sync::Lock<NonDetVMTask, VMCountDecrementer>,
-    >,
+    read_permit: tokio::sync::OwnedRwLockReadGuard<()>,
+    limiter: memlimiter::Limiter,
 ) {
     let mut count = 0;
     loop {
@@ -416,17 +421,29 @@ async fn nondet_vm_processor(
                 break;
             }
 
-            Some(task) = nondet_validator_queue_receiver.recv() => {
+            Ok(val) = zelf.queue.receiver.recv() => {
+                let Some(task) = val else {
+                    log_debug!("nondet vm processor: all senders closed, exiting");
+                    break;
+                };
                 count += 1;
+
+                let task_done = task.tasks_done.clone();
+
+                let _dropper = sync::DropGuard::new(move || {
+                    task_done.notify_one();
+                });
+
                 if zelf.queue.nondet_call_disagree.load(std::sync::atomic::Ordering::SeqCst) != u32::MAX {
                     log_info!("skipped nondet block due to disagreement in previous one");
+
                     continue;
                 }
 
                 let call_no = task.call_no;
 
                 let (task, tok) = task.deconstruct();
-                let res = run_single_nondet(&zelf, task).await;
+                let res = run_single_nondet(&zelf, task, limiter.derived()).await;
 
                 let do_disagree = match res {
                     Ok(rt::vm::RunOk::Return(v)) if v == [16] => false,
@@ -455,7 +472,6 @@ async fn nondet_vm_processor(
         }
     }
 
-    log_debug!(count = count; "all nondet vms done");
-
-    zelf.queue.tasks_loop_done.notify_one();
+    std::mem::drop(read_permit);
+    log_debug!(count = count; "nondet worker done");
 }

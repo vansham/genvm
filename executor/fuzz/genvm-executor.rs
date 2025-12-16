@@ -1,13 +1,13 @@
 use std::{
-    any,
     collections::HashMap,
     io::Write,
-    os::fd::{AsRawFd, FromRawFd},
+    os::fd::FromRawFd,
     sync::{atomic::AtomicBool, Arc},
 };
 
 use anyhow::Context;
 use arbitrary::Arbitrary;
+use genvm::public_abi;
 use genvm_common::*;
 use tokio::io::AsyncWriteExt;
 
@@ -164,9 +164,9 @@ struct HostAccumulatedData {
 mod mock_host {
     use anyhow::Result;
     use genvm::host::host_fns;
-    use genvm::public_abi::{ResultCode, StorageType};
+    use genvm::public_abi::StorageType;
     use genvm_common::log_debug;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use std::io::{Read, Write};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -636,7 +636,8 @@ fn generate_contract(data: &FuzzingInput) -> anyhow::Result<Vec<u8>> {
 
 #[derive(Debug)]
 struct ReturnToCompare {
-    run_ok: genvm::rt::vm::RunOk,
+    kind: public_abi::ResultCode,
+    result_data: calldata::Value,
     fingerprint: Option<genvm::rt::errors::Fingerprint>,
 }
 
@@ -679,9 +680,10 @@ async fn run_with(
     let shared_data = sync::DArc::new(genvm::rt::SharedData {
         cancellation: token,
         is_sync: eq_outputs.is_some(),
-        cookie: "a".to_owned(),
+        genvm_id: genvm_modules_interfaces::GenVMId(1),
         debug_mode: false,
         metrics: genvm::Metrics::default(),
+        storage_pages_limit: std::sync::atomic::AtomicU64::new(128),
     });
 
     let mut registry_dir = std::env::current_dir()?;
@@ -717,10 +719,7 @@ async fn run_with(
         rest: Default::default(),
     };
 
-    let host = genvm::Host::new(
-        Box::new(std::sync::Mutex::new(duplex_b)),
-        shared_data.gep(|x| &x.metrics.host),
-    );
+    let host = genvm::Host::new(Box::new(duplex_b), shared_data.gep(|x| &x.metrics.host));
 
     let mut actual_host = mock_host::MockHost {
         eq_outputs,
@@ -740,7 +739,7 @@ async fn run_with(
     let supervisor = genvm::create_supervisor(&config, host, host_data, shared_data, &data.msg)
         .with_context(|| "creating supervisor")?;
 
-    let (run_ok, fingerprint, _) = genvm::run_with(data.msg.clone(), supervisor, &data.get_perms())
+    let (full_res, _) = genvm::run_with(data.msg.clone(), supervisor, &data.get_perms())
         .await
         .with_context(|| "running")?;
 
@@ -752,8 +751,9 @@ async fn run_with(
 
     Ok(LeaderData {
         retn: ReturnToCompare {
-            run_ok,
-            fingerprint,
+            kind: full_res.kind,
+            result_data: full_res.data,
+            fingerprint: full_res.fingerprint,
         },
         host_data,
     })
@@ -797,23 +797,8 @@ async fn do_fuzzing(data: FuzzingInput, contract_code: &[u8]) -> anyhow::Result<
         validator_res.host_data.messages
     );
 
-    match (leader_res.retn.run_ok, validator_res.retn.run_ok) {
-        (genvm::rt::vm::RunOk::Return(a), genvm::rt::vm::RunOk::Return(b)) => {
-            assert_eq!(a, b);
-        }
-        (genvm::rt::vm::RunOk::VMError(a_msg, _), genvm::rt::vm::RunOk::VMError(b_msg, _)) => {
-            assert_eq!(a_msg, b_msg);
-        }
-        (genvm::rt::vm::RunOk::UserError(a), genvm::rt::vm::RunOk::UserError(b)) => {
-            assert_eq!(a, b);
-        }
-        (a, b) => {
-            eprintln!("leader return: {a:?}");
-            eprintln!("validator return: {b:?}");
-
-            panic!("mismatched return types");
-        }
-    }
+    assert_eq!(leader_res.retn.kind, validator_res.retn.kind);
+    assert_eq!(leader_res.retn.result_data, validator_res.retn.result_data);
 
     assert_eq!(leader_res.host_data.result, validator_res.host_data.result);
 

@@ -24,6 +24,16 @@ mod darc {
         _phantom: PhantomData<T>,
     }
 
+    impl<T: std::fmt::Debug> std::fmt::Debug for DArc<T>
+    where
+        T: 'static + ?Sized,
+    {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let s: &T = self;
+            write!(f, "{:?}", s)
+        }
+    }
+
     pub struct DArcStruct<T> {
         control_block: NonNull<DArcControlBlock>,
         actual_data: std::mem::ManuallyDrop<T>,
@@ -486,5 +496,29 @@ impl<T, Token> std::ops::Deref for Lock<T, Token> {
 impl<T, Token> std::ops::DerefMut for Lock<T, Token> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+pub struct DropGuard<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> DropGuard<F> {
+    pub fn new(func: F) -> Self {
+        Self(Some(func))
+    }
+
+    pub fn reset(&mut self) {
+        std::mem::drop(self.0.take());
+    }
+
+    pub fn forget(mut self) {
+        std::mem::drop(self.0.take());
+    }
+}
+
+impl<F: FnOnce()> Drop for DropGuard<F> {
+    fn drop(&mut self) {
+        if let Some(func) = self.0.take() {
+            func();
+        }
     }
 }

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    common::{ErrorKind, MapUserError, ModuleError},
+    common::{ErrorKind, LoggerWithId, MapUserError, ModuleError},
     scripting::{self, DEFAULT_LUA_SER_OPTIONS},
 };
 use anyhow::Context;
@@ -57,7 +57,7 @@ pub fn create_global(vm: &mlua::Lua) -> anyhow::Result<mlua::Value> {
 
         let script_message = as_serde.remove("message").and_then(|x| x.as_str().map(|x| x.to_owned())).unwrap_or_else(|| "<none>".to_owned());
 
-        log_with_level!(level, log:serde = as_serde, cookie = crate::common::get_cookie(); "script_log: {script_message}");
+        log_with_level_into!(level, &LoggerWithId, log:serde = as_serde, genvm_id:id = crate::common::get_genvm_id().0; "script_log: {script_message}");
         Ok(())
     })?)?;
 
@@ -243,6 +243,36 @@ pub fn create_global(vm: &mlua::Lua) -> anyhow::Result<mlua::Value> {
                 Ok(result)
             },
         )?,
+    )?;
+
+    use rand::TryRngCore;
+
+    dflt.set(
+        "random_bytes",
+        vm.create_function(|vm: &mlua::Lua, length: usize| {
+            let mut rng = rand::rngs::OsRng;
+            let mut bytes = vec![0u8; length];
+            rng.try_fill_bytes(&mut bytes)
+                .map_err(|x| scripting::anyhow_to_lua_error(x.into()))?;
+            vm.create_string(bytes)
+        })?,
+    )?;
+
+    dflt.set(
+        "random_float",
+        vm.create_function(|_: &mlua::Lua, _: ()| {
+            let mut rng = rand::rngs::OsRng;
+            let float_size = 64;
+            let precision = 52 + 1;
+            let scale = 1.0 / ((1u64 << precision) as f64);
+
+            let value: u64 = rng
+                .try_next_u64()
+                .map_err(|x| scripting::anyhow_to_lua_error(x.into()))?;
+            let value = value >> (float_size - precision) as u64;
+
+            Ok(scale * value as f64)
+        })?,
     )?;
 
     Ok(mlua::Value::Table(dflt))

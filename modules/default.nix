@@ -4,6 +4,8 @@
 , components
 , get-root-subtree
 , build-config
+, patch-yaml-schema
+, patch-manifest
 , ...
 }:
 let
@@ -14,6 +16,8 @@ let
 				inherit target;
 				pname = "genvm-modules-bin";
 				version = "0.1.0";
+
+				profile = "release-with-debug";
 
 				cargoLock.lockFile = ./implementation/Cargo.lock;
 
@@ -45,7 +49,7 @@ let
 			dontConfigure = true;
 			dontBuild = true;
 
-			nativeBuildInputs = [ pkgs.makeWrapper ];
+			nativeBuildInputs = [ pkgs.makeWrapper patch-yaml-schema patch-manifest ];
 
 			installPhase = ''
 				mkdir -p $out/bin
@@ -53,9 +57,14 @@ let
 				for src in $srcs; do
 					if [[ "$src" != "${exe}" ]]
 					then
-						cp -r "$src/." "$out/."
+						cp --no-preserve=ownership -r "$src/." "$out/."
 					fi
 				done
+
+				chmod -R u+w "$out"
+				patch-yaml-schema --tag ${build-config.executor-version} "$out"
+
+				patch-manifest --tag ${build-config.executor-version} "$out/data/manifest.yaml"
 			'';
 		};
 in {

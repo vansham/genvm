@@ -4,6 +4,7 @@
 , components
 , get-root-subtree
 , build-config
+, patch-yaml-schema
 , ...
 }:
 let
@@ -41,12 +42,11 @@ let
 				./install
 			];
 
-
 			dontUnpack = true;
 			dontConfigure = true;
 			dontBuild = true;
 
-			nativeBuildInputs = [ pkgs.makeWrapper ];
+			nativeBuildInputs = [ pkgs.makeWrapper patch-yaml-schema ];
 
 			installPhase = ''
 				mkdir -p $out/executor/${build-config.executor-version}/bin
@@ -54,19 +54,22 @@ let
 				for src in $srcs; do
 					if [[ "$src" != "${exe}" ]]
 					then
-						cp -r "$src/." "$out/executor/${build-config.executor-version}/."
+						cp --no-preserve=ownership -r "$src/." "$out/executor/${build-config.executor-version}/."
 					fi
 				done
+
+				chmod -R u+w "$out"
+				patch-yaml-schema --tag ${build-config.executor-version} "$out"
 			'';
 		};
 in {
-	amd64-linux = {
+	amd64-linux-executor = {
 		executor = make-for-target "amd64-linux";
 	};
-	arm64-linux = {
+	arm64-linux-executor = {
 		executor = make-for-target "arm64-linux";
 	};
-	arm64-macos = {
+	arm64-macos-executor = {
 		executor = make-for-target "arm64-macos";
 	};
 }

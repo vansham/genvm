@@ -1,10 +1,154 @@
 import logging
 import os
 import shlex
+import argparse
+import platform
+import tarfile
+import io
+import traceback
+import hashlib
 
-INTERACTIVE = True if os.environ.get('INTERACTIVE', 'false') == 'true' else False
+target_os = platform.system().lower()
+if target_os == 'darwin':
+	target_os = 'macos'
+if target_os not in ('linux', 'macos'):
+	target_os = 'linux'  # default to linux
 
-log_level_str = os.environ.get('LOGLEVEL', 'INFO').upper()
+
+target_arch = platform.machine()
+target_arch = {
+	'x86_64': 'amd64',
+	'aarch64': 'arm64',
+	'arm64': 'arm64',
+	'amd64': 'amd64',
+}.get(target_arch, 'amd64')
+
+
+def str_to_bool(value):
+	if value.lower() in ('yes', 'true', 't', 'y', '1'):
+		return True
+	elif value.lower() in ('no', 'false', 'f', 'n', '0'):
+		return False
+	else:
+		raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def str_to_bool_or_none(value):
+	if value is None or value.lower() in ('none', 'default', 'null', 'nil', ''):
+		return None
+	return str_to_bool(value)
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+	'--os',
+	type=str,
+	default=target_os,
+	help='Target operating system (linux/macos)',
+)
+parser.add_argument(
+	'--arch',
+	type=str,
+	default=target_arch,
+	help='Target architecture (amd64/arm64)',
+)
+parser.add_argument(
+	'--interactive',
+	type=str_to_bool,
+	default=False,
+	help='Whether to run in interactive mode',
+)
+parser.add_argument(
+	'--error-on-missing-executor',
+	type=str_to_bool,
+	default=True,
+	help='Whether to error on missing executor',
+)
+parser.add_argument(
+	'--log-level',
+	type=str,
+	default='INFO',
+	help='Logging level',
+	choices=[
+		'DEBUG',
+		'INFO',
+		'WARNING',
+		'ERROR',
+		'CRITICAL',
+	],
+)
+
+step_names = [
+	'executor-download',
+	'runners-download',
+	'bin-patch',
+	'bin-check',
+	'precompile',
+]
+
+parser.add_argument(
+	'--default-steps',
+	type=str_to_bool,
+	default=True,
+	help='Default value for steps when not explicitly set',
+)
+parser.add_argument(
+	'--default-download',
+	type=str_to_bool_or_none,
+	default=None,
+	help='Default value for download steps (default: use --default-steps)',
+)
+parser.add_argument(
+	'--executor-download',
+	type=str_to_bool_or_none,
+	default=None,
+	help='Enable/disable executor download step (default: use --default-download)',
+)
+parser.add_argument(
+	'--runners-download',
+	type=str_to_bool_or_none,
+	default=None,
+	help='Enable/disable runners download step (default: use --default-download)',
+)
+parser.add_argument(
+	'--bin-patch',
+	type=str_to_bool_or_none,
+	default=None,
+	help='Enable/disable bin patch step (default: use --default-steps)',
+)
+parser.add_argument(
+	'--bin-check',
+	type=str_to_bool_or_none,
+	default=None,
+	help='Enable/disable bin check step (default: use --default-steps)',
+)
+parser.add_argument(
+	'--precompile',
+	type=str_to_bool_or_none,
+	default=None,
+	help='Enable/disable precompile step (default: use --default-steps)',
+)
+
+args = parser.parse_args()
+
+# Apply default to None values
+if args.default_download is None:
+	args.default_download = args.default_steps
+
+if args.executor_download is None:
+	args.executor_download = args.default_download
+if args.runners_download is None:
+	args.runners_download = args.default_download
+if args.bin_patch is None:
+	args.bin_patch = args.default_steps
+if args.bin_check is None:
+	args.bin_check = args.default_steps
+if args.precompile is None:
+	args.precompile = args.default_steps
+
+INTERACTIVE = args.interactive
+
+log_level_str = args.log_level
 log_levels = {
 	'DEBUG': logging.DEBUG,
 	'INFO': logging.INFO,
@@ -21,13 +165,10 @@ from pathlib import Path
 import subprocess
 import json
 
-import lief
-import yaml
-
 logging.info('Starting actual post-install script')
 
-import hashlib
-import urllib.request
+if args.bin_patch:
+	import lief
 
 HASH_VALID_CHARS = '0123456789abcdfghijklmnpqrsvwxyz'
 
@@ -220,9 +361,13 @@ def run_check_command(command: list[str | Path]):
 
 
 modules_executable = genvm_root_dir.joinpath('bin', 'genvm-modules')
-patch_executable(modules_executable, rpath_dir=[genvm_root_dir.joinpath('lib')])
+if args.bin_patch:
+	patch_executable(modules_executable, rpath_dir=[genvm_root_dir.joinpath('lib')])
 
-run_check_command([modules_executable, '--version'])
+if args.bin_check:
+	run_check_command([modules_executable, '--version'])
+
+import yaml
 
 manifest = yaml.safe_load(genvm_root_dir.joinpath('data', 'manifest.yaml').read_text())
 
@@ -250,6 +395,20 @@ def _load_registry(file: str | Path) -> dict[str, list[str]]:
 	return ret
 
 
+def _download_url(url: str) -> bytes:
+	import urllib.request
+
+	logger.info(f'downloading {url}')
+	for attempt in range(5):
+		try:
+			with urllib.request.urlopen(url) as f:
+				return f.read()
+		except Exception as e:
+			trace = traceback.format_exception(e)
+			logger.warning(f'Attempt {attempt + 1} failed for {url}: {e}' + ''.join(trace))
+	raise RuntimeError(f'failed to download {url} after multiple attempts')
+
+
 def _download_single(name: str, hash: str) -> bytes:
 	format_vars = {
 		'name': name,
@@ -261,28 +420,15 @@ def _download_single(name: str, hash: str) -> bytes:
 		url = url_template.format(**format_vars)
 		try:
 			logger.info(f'downloading {url}')
-			with urllib.request.urlopen(url) as f:
-				return f.read()
+			return _download_url(url)
 		except Exception as e:
 			pass
 	raise RuntimeError(f'failed to download {name}:{hash} from all sources')
 
 
-for executor_version in manifest.get('executor_versions', {}).keys():
-	logger.info(f'Patching executor version {executor_version}')
-	executor_root_dir = genvm_root_dir.joinpath('executor', executor_version)
-	executor_executable = executor_root_dir.joinpath('bin', 'genvm')
-	if not executor_executable.exists():
-		logger.warning(f'Executor path {executor_executable} does not exist, skipping')
-		continue
-	patch_executable(
-		executor_executable,
-		rpath_dir=[genvm_root_dir.joinpath('lib'), executor_root_dir.joinpath('lib')],
-	)
-	run_check_command([executor_executable, '--version'])
-
-	logger.info(f'checking that all runners are present for {executor_version}')
-	all_runners = _load_registry(executor_root_dir.joinpath('data', 'all.json'))
+def download_runners_from_json(file: str | Path):
+	logger.info(f'checking that all runners are present for {file}')
+	all_runners = _load_registry(file)
 	runners_dir = genvm_root_dir.joinpath('runners')
 
 	for name, hashes in all_runners.items():
@@ -305,4 +451,68 @@ for executor_version in manifest.get('executor_versions', {}).keys():
 			cur_dst.parent.mkdir(parents=True, exist_ok=True)
 			cur_dst.write_bytes(data)
 
-	run_check_command([executor_executable, 'precompile'])
+
+all_executor_versions = list(manifest.get('executor_versions', {}).keys())
+all_executor_versions.sort()
+
+
+def parse_executor_version(executor_version: str) -> tuple[int, int, int]:
+	executor_version = executor_version.removeprefix('v')
+	major_str, minor_str, patch_str = executor_version.split('.', 2)
+	return (int(major_str), int(minor_str), int(patch_str))
+
+
+def process_executor_version(executor_version: str):
+	logger.info(f'Examining executor version {executor_version}')
+
+	if executor_version != 'vTEST':
+		major, minor, patch = parse_executor_version(executor_version)
+		next_version = f'v{major}.{minor}.{patch + 1}'
+		if next_version in all_executor_versions:
+			logger.info(
+				f'Skipping executor version {executor_version} because a newer version {next_version} exists'
+			)
+			return
+
+	executor_root_dir = genvm_root_dir.joinpath('executor', executor_version)
+	executor_executable = executor_root_dir.joinpath('bin', 'genvm')
+
+	if args.executor_download or args.bin_patch or args.bin_check:
+		if not executor_executable.exists() and args.executor_download:
+			import lzma
+
+			tar_xz_data = _download_url(
+				f'https://github.com/genlayerlabs/genvm/releases/download/{executor_version}/genvm-{target_os}-{target_arch}-executor.tar.xz'
+			)
+			tar_data = lzma.decompress(tar_xz_data)
+			tarfile.TarFile.open(fileobj=io.BytesIO(tar_data)).extractall(
+				path=executor_root_dir
+			)
+		if not executor_executable.exists():
+			if args.error_on_missing_executor:
+				logger.error(f'Executor path {executor_executable} does not exist')
+				raise RuntimeError(f'Executor path {executor_executable} does not exist')
+			else:
+				logger.warning(f'Executor path {executor_executable} does not exist, skipping')
+				return
+	if args.bin_patch:
+		patch_executable(
+			executor_executable,
+			rpath_dir=[genvm_root_dir.joinpath('lib'), executor_root_dir.joinpath('lib')],
+		)
+	if args.bin_check:
+		run_check_command([executor_executable, '--version'])
+
+	if args.runners_download:
+		download_runners_from_json(executor_root_dir.joinpath('data', 'all.json'))
+
+	if args.precompile:
+		logger.info(f'Precompiling executor {executor_version}')
+		run_check_command([executor_executable, 'precompile'])
+
+
+for executor_version in all_executor_versions:
+	process_executor_version(executor_version)
+
+if genvm_root_dir.joinpath('executor', 'vTEST').exists():
+	process_executor_version('vTEST')

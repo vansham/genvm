@@ -1,3 +1,4 @@
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use genvm_common::*;
 use genvm_modules_interfaces::GenericValue;
@@ -177,7 +178,7 @@ where
 async fn loop_one_inner<T, R>(
     handler: &mut impl MessageHandler<T, R>,
     stream: &mut WSStream,
-    cookie: &str,
+    genvm_id: genvm_modules_interfaces::GenVMId,
 ) -> anyhow::Result<()>
 where
     T: serde::de::DeserializeOwned + 'static,
@@ -219,7 +220,7 @@ where
                             }
                         }
                         Err(err) => {
-                            log_error!(error:ah = &err, cookie = cookie; "handler fatal error");
+                            log_error_into!(&LoggerWithId, error:ah = &err, genvm_id:id = genvm_id.0; "handler fatal error");
                             genvm_modules_interfaces::Result::FatalError(format!("{err:#}"))
                         }
                     },
@@ -271,19 +272,19 @@ where
     T: serde::de::DeserializeOwned + 'static,
     R: serde::Serialize + Send + 'static,
 {
-    let cookie = hello.cookie.clone();
+    let genvm_id = hello.genvm_id;
 
     let mut handler = handler_provider.new_handler(hello).await?;
 
-    let res = loop_one_inner(&mut handler, stream, &cookie).await;
+    let res = loop_one_inner(&mut handler, stream, genvm_id).await;
 
     if let Err(close) = handler.cleanup().await {
-        log_error!(error:ah = &close, cookie = cookie; "cleanup error");
+        log_error_into!(&LoggerWithId, error:ah = &close, genvm_id:id = genvm_id.0; "cleanup error");
     }
 
     if res.is_err() {
         if let Err(close) = stream.close(None).await {
-            log_error!(error:err = close, cookie = cookie; "stream closing error")
+            log_error_into!(&LoggerWithId, error:err = close, genvm_id:id = genvm_id.0; "stream closing error")
         }
     }
 
@@ -319,15 +320,14 @@ async fn loop_one<T, R>(
 
     log_trace!(hello:serde = hello; "read hello");
 
-    let cookie = hello.cookie.clone();
-    let cookie: &str = &cookie;
-    COOKIE
-        .scope(Arc::from(cookie), async {
-            log_debug!(cookie = cookie; "peer accepted");
+    let genvm_id = hello.genvm_id;
+    GENVM_ID
+        .scope(genvm_id, async {
+            log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "peer accepted");
             if let Err(e) = loop_one_impl(handler_provider, &mut stream, hello).await {
-                log_error!(error:ah = &e, cookie = cookie; "internal loop error");
+                log_error_into!(&LoggerWithId, error:ah = &e, genvm_id:id = genvm_id.0; "internal loop error");
             }
-            log_debug!(cookie = cookie; "peer done");
+            log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "peer done");
         })
         .await;
 }
@@ -366,22 +366,43 @@ where
 }
 
 tokio::task_local! {
-    static COOKIE: Arc<str>;
+    static GENVM_ID: genvm_modules_interfaces::GenVMId;
 }
 
-pub fn get_cookie() -> Arc<str> {
-    match COOKIE.try_with(|f| f.clone()) {
+pub fn get_genvm_id() -> genvm_modules_interfaces::GenVMId {
+    match GENVM_ID.try_with(|f| *f) {
         Ok(v) => v,
-        Err(_) => Arc::from("<absent>"),
+        Err(_) => genvm_modules_interfaces::GenVMId(0), // Use 0 as absent/default value
     }
 }
 
+// Keep for backward compatibility
+pub fn get_cookie() -> Arc<str> {
+    Arc::from(get_genvm_id().to_string())
+}
+
 #[allow(dead_code)]
-pub fn test_with_cookie<F>(value: &str, f: F) -> tokio::task::futures::TaskLocalFuture<Arc<str>, F>
+pub fn test_with_cookie<F>(
+    value: &str,
+    f: F,
+) -> tokio::task::futures::TaskLocalFuture<genvm_modules_interfaces::GenVMId, F>
 where
     F: std::future::Future,
 {
-    COOKIE.scope(Arc::from(value), f)
+    // Parse the string as a u64 for the genvm_id, fallback to 0 if parsing fails
+    let genvm_id = value.parse::<u64>().unwrap_or(0);
+    GENVM_ID.scope(genvm_modules_interfaces::GenVMId(genvm_id), f)
+}
+
+#[allow(dead_code)]
+pub fn test_with_genvm_id<F>(
+    genvm_id: genvm_modules_interfaces::GenVMId,
+    f: F,
+) -> tokio::task::futures::TaskLocalFuture<genvm_modules_interfaces::GenVMId, F>
+where
+    F: std::future::Future,
+{
+    GENVM_ID.scope(genvm_id, f)
 }
 
 pub fn create_client() -> anyhow::Result<reqwest::Client> {
@@ -437,6 +458,96 @@ pub fn setup_cancels(
     Ok(token)
 }
 
+pub enum LogSinkElement {
+    Map(serde_json::Map<String, serde_json::Value>),
+    Line(String),
+    Raw(Vec<u8>),
+}
+
+impl LogSinkElement {
+    pub fn into_json(self) -> serde_json::Map<String, serde_json::Value> {
+        match self {
+            LogSinkElement::Map(v) => v,
+            LogSinkElement::Line(text) => serde_json::Map::from_iter([
+                ("level".into(), serde_json::Value::String("info".into())),
+                (
+                    "message".into(),
+                    serde_json::Value::String("genvm log".into()),
+                ),
+                ("line".into(), text.into()),
+            ]),
+            LogSinkElement::Raw(s) => {
+                if let Ok(v) = serde_json::from_slice(&s) {
+                    v
+                } else {
+                    let mut as_encoded = String::new();
+                    base64::prelude::BASE64_STANDARD.encode_string(s, &mut as_encoded);
+                    serde_json::Map::from_iter([
+                        ("level".into(), serde_json::Value::String("error".into())),
+                        (
+                            "message".into(),
+                            serde_json::Value::String("genvm log".into()),
+                        ),
+                        ("line".into(), as_encoded.into()),
+                    ])
+                }
+            }
+        }
+    }
+}
+
+pub type LogSink = Arc<crossbeam::queue::SegQueue<LogSinkElement>>;
+
+pub static GENVM_BY_ID_LOGGER: std::sync::LazyLock<
+    papaya::HashMap<genvm_modules_interfaces::GenVMId, LogSink>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub struct LoggerWithId;
+
+fn get_logger_sink(record: &genvm_common::logger::Record<'_>) -> Option<LogSink> {
+    let Some((_, genvm_common::logger::Capture::Id(genvm_id))) =
+        record.kv.iter().find(|x| x.0 == "genvm_id")
+    else {
+        return None;
+    };
+    let genvm_id = *genvm_id;
+
+    GENVM_BY_ID_LOGGER
+        .pin()
+        .get(&genvm_modules_interfaces::GenVMId(genvm_id))
+        .cloned()
+}
+
+impl genvm_common::logger::ILogger for LoggerWithId {
+    fn try_log(
+        &self,
+        record: genvm_common::logger::Record<'_>,
+    ) -> std::result::Result<(), genvm_common::logger::Error> {
+        let Some(sink) = get_logger_sink(&record) else {
+            if let Some(l) = genvm_common::logger::__LOGGER.get() {
+                return l.try_log(record);
+            } else {
+                return Ok(());
+            }
+        };
+
+        let mut buf = Vec::new();
+        genvm_common::logger::log_into_buffer(&mut buf, record)?;
+
+        sink.push(LogSinkElement::Raw(buf));
+
+        Ok(())
+    }
+
+    fn enabled(&self, callsite: genvm_common::logger::Callsite) -> bool {
+        if let Some(l) = genvm_common::logger::__LOGGER.get() {
+            l.enabled(callsite)
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use std::sync::{Arc, Once};
@@ -459,7 +570,7 @@ pub mod tests {
 
     pub fn get_hello() -> Arc<genvm_modules_interfaces::GenVMHello> {
         Arc::new(genvm_modules_interfaces::GenVMHello {
-            cookie: "test_cookie".to_owned(),
+            genvm_id: genvm_modules_interfaces::GenVMId(999),
             host_data: genvm_modules_interfaces::HostData {
                 node_address: "test_node_address".to_owned(),
                 tx_id: "test_tx_id".to_owned(),

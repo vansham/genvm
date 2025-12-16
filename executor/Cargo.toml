@@ -6,8 +6,6 @@ edition = "2021"
 opt-level = 2
 [profile.dev.package.wasmparser]
 opt-level = 2
-[profile.dev.package.blake3]
-opt-level = 2
 
 [profile.release]
 debug = true
@@ -19,6 +17,10 @@ static_mut_refs = "allow"
 [[example]]
 name = "fuzz-genvm-executor"
 path = "fuzz/genvm-executor.rs"
+
+[[example]]
+name = "fuzz-genvm-storage"
+path = "fuzz/genvm-storage.rs"
 
 [dependencies]
 # 432745aca5ee802255935768125810fcba38dae0
@@ -62,6 +64,10 @@ mt19937 = "3.1.0"
 rand_core = "0.9.3"
 crossbeam = "0.8.4"
 arbitrary = { version = "1.0.3", features = [ "derive" ] }
+rpds = "1.2.0"
+archery = "1.2.2"
+bytes = "1.11.0"
+tokio-mpmc = "0.2.4"
 
 [dev-dependencies]
 afl = { version = "0.15.18", features = ["no_cfg_fuzzing"] }

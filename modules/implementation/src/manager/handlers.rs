@@ -110,6 +110,7 @@ pub async fn handle_genvm_run_readonly(
         timestamp,
         host: "TODO".to_owned(),
         extra_args: Vec::new(),
+        storage_pages: 0,
     };
     let (genvm_id, recv) = run::start_genvm(ctx.clone(), req, Box::new(())).await?;
 
@@ -416,7 +417,7 @@ async fn check_llm_availability(
         sign_url: Arc::from("test_url"),
         sign_vars: BTreeMap::new(),
         hello: Arc::new(genvm_modules_interfaces::GenVMHello {
-            cookie: "test_cookie".to_owned(),
+            genvm_id: genvm_modules_interfaces::GenVMId(999),
             host_data: genvm_modules_interfaces::HostData {
                 node_address: "test_node".to_owned(),
                 tx_id: "test_tx".to_owned(),

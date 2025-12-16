@@ -6,7 +6,7 @@ use genvm_common::*;
 use genvm_modules_interfaces::GenericValue;
 use wiggle::GuestError;
 
-use crate::host::SlotID;
+use crate::host::{self, SlotID};
 use crate::{calldata, public_abi, rt};
 
 use super::{base, gl_call, vfs};
@@ -80,10 +80,37 @@ impl ExtendedMessage {
     }
 }
 
+#[derive(Clone)]
+pub struct ReadToken {
+    pub mode: public_abi::StorageType,
+    pub account: calldata::Address,
+}
+
+pub struct StorageHostLock<'a>(tokio::sync::MutexGuard<'a, host::Host>, ReadToken);
+
+impl rt::vm::storage::HostStorage for StorageHostLock<'_> {
+    fn storage_read(&mut self, slot_id: SlotID, index: u32, buf: &mut [u8]) -> anyhow::Result<()> {
+        self.0
+            .storage_read(self.1.mode, self.1.account, slot_id, index, buf)
+    }
+}
+
+#[derive(Clone)]
+pub struct StorageHostHolder(pub Arc<tokio::sync::Mutex<host::Host>>, pub ReadToken);
+
+impl rt::vm::storage::HostStorageLocking for StorageHostHolder {
+    type ReturnType<'a> = StorageHostLock<'a>;
+
+    async fn lock(&self) -> Self::ReturnType<'_> {
+        StorageHostLock(self.0.lock().await, self.1.clone())
+    }
+}
+
 pub struct SingleVMData {
     pub conf: base::Config,
     pub message_data: ExtendedMessage,
     pub supervisor: Arc<rt::supervisor::Supervisor>,
+    pub storage: rt::vm::storage::Storage<StorageHostHolder>,
     pub version: genvm_common::version::Version,
     pub should_capture_fp: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -403,8 +430,10 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 let data_str = serde_json::to_string(&data_json).unwrap();
 
                 let supervisor = self.context.data.supervisor.clone();
-                let mut host = supervisor.host.lock().await;
-                let res = host
+                let res = supervisor
+                    .host
+                    .lock()
+                    .await
                     .eth_send(address, &calldata, &data_str)
                     .map_err(generated::types::Error::trap)?;
 
@@ -420,8 +449,10 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 }
 
                 let supervisor = self.context.data.supervisor.clone();
-                let mut host = supervisor.host.lock().await;
-                let res = host
+                let res = supervisor
+                    .host
+                    .lock()
+                    .await
                     .eth_call(address, &calldata)
                     .map_err(generated::types::Error::trap)?;
                 Ok(generated::types::Fd::from(
@@ -489,6 +520,17 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                         entry_stage_data: default_entry_stage_data(),
                         stack: my_data.stack,
                     },
+                    storage: rt::vm::storage::Storage::new(
+                        address,
+                        supervisor.get_storage_limiter(),
+                        StorageHostHolder(
+                            supervisor.host.clone(),
+                            ReadToken {
+                                account: address,
+                                mode: state,
+                            },
+                        ),
+                    ),
                     supervisor: supervisor.clone(),
                     version: genvm_common::version::Version::ZERO,
                     should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -532,8 +574,18 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
 
                 let supervisor = self.context.data.supervisor.clone();
 
-                let mut host = supervisor.host.lock().await;
-                host.post_event(&real_topics[..topics.len()], &blob_data)
+                let size = topics.len() + (blob_data.len() + 31) / 32;
+                let size = size as u64;
+                supervisor
+                    .get_storage_limiter()
+                    .consume(size)
+                    .map_err(generated::types::Error::trap)?;
+
+                supervisor
+                    .host
+                    .lock()
+                    .await
+                    .post_event(&real_topics[..topics.len()], &blob_data)
                     .map_err(generated::types::Error::trap)?;
 
                 return Ok(file_fd_none());
@@ -570,8 +622,13 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 });
                 let data_str = serde_json::to_string(&data_json).unwrap();
 
-                let mut host = self.context.data.supervisor.host.lock().await;
-                let res = host
+                let res = self
+                    .context
+                    .data
+                    .supervisor
+                    .host
+                    .lock()
+                    .await
                     .post_message(&address, &calldata_encoded, &data_str)
                     .map_err(generated::types::Error::trap)?;
 
@@ -613,8 +670,13 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 });
                 let data_str = serde_json::to_string(&data_json).unwrap();
 
-                let mut host = self.context.data.supervisor.host.lock().await;
-                let res = host
+                let res = self
+                    .context
+                    .data
+                    .supervisor
+                    .host
+                    .lock()
+                    .await
                     .deploy_contract(&calldata_encoded, &code, &data_str)
                     .map_err(generated::types::Error::trap)?;
 
@@ -681,11 +743,15 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     return Err(generated::types::Errno::Inval.into());
                 }
 
-                let mut host = self.context.data.supervisor.host.lock().await;
-                let remaining_fuel_as_gen = host
+                let remaining_fuel_as_gen = self
+                    .context
+                    .data
+                    .supervisor
+                    .host
+                    .lock()
+                    .await
                     .remaining_fuel_as_gen()
                     .map_err(generated::types::Error::trap)?;
-                std::mem::drop(host);
 
                 let sup = self.context.data.supervisor.clone();
 
@@ -704,10 +770,11 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     use genvm_modules_interfaces::llm::PromptAnswer;
 
                     if let Ok(PromptAnswer { consumed_gen, .. }) = &result {
-                        let mut host = sup.host.lock().await;
-                        host.consume_fuel(*consumed_gen)
+                        sup.host
+                            .lock()
+                            .await
+                            .consume_fuel(*consumed_gen)
                             .map_err(generated::types::Error::trap)?;
-                        std::mem::drop(host);
                     }
 
                     Ok(result.map(|r| r.data))
@@ -736,11 +803,15 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 );
 
                 // Get remaining fuel from host
-                let mut host = self.context.data.supervisor.host.lock().await;
-                let remaining_fuel_as_gen = host
+                let remaining_fuel_as_gen = self
+                    .context
+                    .data
+                    .supervisor
+                    .host
+                    .lock()
+                    .await
                     .remaining_fuel_as_gen()
                     .map_err(generated::types::Error::trap)?;
-                std::mem::drop(host);
 
                 let sup = self.context.data.supervisor.clone();
                 let task = taskify(async move {
@@ -757,8 +828,10 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     use genvm_modules_interfaces::llm::{PromptAnswer, PromptAnswerData};
 
                     if let Ok(PromptAnswer { consumed_gen, .. }) = &answer {
-                        let mut host = sup.host.lock().await;
-                        host.consume_fuel(*consumed_gen)
+                        sup.host
+                            .lock()
+                            .await
+                            .consume_fuel(*consumed_gen)
                             .map_err(generated::types::Error::trap)?;
                     }
 
@@ -848,18 +921,29 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
         let mut vec = Vec::with_capacity(mem_size);
         unsafe { vec.set_len(mem_size) };
 
-        let mut host = self.context.data.supervisor.host.lock().await;
-
-        host.storage_read(
-            self.context.data.conf.state_mode,
-            account,
-            slot,
-            index,
-            &mut vec,
-        )
-        .map_err(generated::types::Error::trap)?;
-
-        std::mem::drop(host);
+        if self.context.data.conf.state_mode == public_abi::StorageType::Default {
+            self.context
+                .data
+                .storage
+                .read(slot, index, &mut vec)
+                .await
+                .map_err(generated::types::Error::trap)?;
+        } else {
+            self.context
+                .data
+                .supervisor
+                .host
+                .lock()
+                .await
+                .storage_read(
+                    self.context.data.conf.state_mode,
+                    account,
+                    slot,
+                    index,
+                    &mut vec,
+                )
+                .map_err(generated::types::Error::trap)?;
+        }
 
         mem.copy_from_slice(&vec, buf)?;
         Ok(())
@@ -892,11 +976,13 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
             return Err(generated::types::Errno::Forbidden.into());
         }
 
-        let buf: Vec<u8> = read_owned_vec(mem, buf)?;
+        let ptr = mem.as_cow(buf)?;
 
-        let mut host = self.context.data.supervisor.host.lock().await;
-
-        host.storage_write(slot, index, &buf)
+        self.context
+            .data
+            .storage
+            .write(slot, index, &ptr)
+            .await
             .map_err(generated::types::Error::trap)
     }
 
@@ -961,8 +1047,12 @@ impl Context {
             return Ok(*res);
         }
 
-        let mut host = self.data.supervisor.host.lock().await;
-        let res = host
+        let res = self
+            .data
+            .supervisor
+            .host
+            .lock()
+            .await
             .get_balance(address)
             .map_err(generated::types::Error::trap)?;
 
@@ -1003,7 +1093,7 @@ impl Context {
             Err(e) => Err(e),
         };
 
-        result.map(|x| x.0)
+        result.map(|x| x.run_ok)
     }
 }
 
@@ -1070,11 +1160,15 @@ impl ContextVFS<'_> {
             .nondet_call_no
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        let leaders_res = {
-            let mut host = self.context.data.supervisor.host.lock().await;
-            host.get_leader_result(call_no)
-        }
-        .map_err(generated::types::Error::trap)?;
+        let leaders_res = self
+            .context
+            .data
+            .supervisor
+            .host
+            .lock()
+            .await
+            .get_leader_result(call_no)
+            .map_err(generated::types::Error::trap)?;
 
         let result_to_return = if self.context.data.supervisor.shared_data.is_sync {
             match leaders_res {
@@ -1087,6 +1181,8 @@ impl ContextVFS<'_> {
                 Some(v) => v,
             }
         } else {
+            let storage_checkpoint = self.context.data.storage.clone();
+
             let message_data = match &leaders_res {
                 None => self.context.data.message_data.fork_leader(
                     public_abi::EntryKind::ConsensusStage,
@@ -1113,7 +1209,7 @@ impl ContextVFS<'_> {
                 conf: base::Config {
                     needs_error_fingerprint: false,
                     is_deterministic: false,
-                    can_read_storage: false,
+                    can_read_storage: self.context.data.conf.can_read_storage,
                     can_write_storage: false,
                     can_spawn_nondet: false,
                     can_call_others: false,
@@ -1124,11 +1220,14 @@ impl ContextVFS<'_> {
                 version: self.context.data.version,
                 supervisor: supervisor.clone(),
                 should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                storage: storage_checkpoint,
             };
 
+            let task_done = Arc::new(tokio::sync::Notify::new());
             let task = rt::supervisor::NonDetVMTask {
                 task: vm_data,
                 call_no,
+                tasks_done: task_done.clone(),
             };
 
             match leaders_res {
@@ -1138,8 +1237,13 @@ impl ContextVFS<'_> {
                         .await
                         .map_err(generated::types::Error::trap)?;
 
-                    let mut host = self.context.data.supervisor.host.lock().await;
-                    host.post_nondet_result(call_no, &res)
+                    self.context
+                        .data
+                        .supervisor
+                        .host
+                        .lock()
+                        .await
+                        .post_nondet_result(call_no, &res)
                         .map_err(generated::types::Error::trap)?;
 
                     res
@@ -1171,11 +1275,13 @@ impl ContextVFS<'_> {
 
         let zelf_conf = &self.context.data.conf;
 
+        let storage_checkpoint = self.context.data.storage.clone();
+
         let vm_data = SingleVMData {
             conf: base::Config {
                 needs_error_fingerprint: false,
                 is_deterministic: zelf_conf.is_deterministic,
-                can_read_storage: false,
+                can_read_storage: zelf_conf.can_read_storage,
                 can_write_storage: zelf_conf.can_write_storage & allow_write_ops,
                 can_spawn_nondet: false,
                 can_call_others: false,
@@ -1186,6 +1292,7 @@ impl ContextVFS<'_> {
             supervisor: supervisor.clone(),
             version: genvm_common::version::Version::ZERO,
             should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage: storage_checkpoint,
         };
 
         let my_res = self.context.spawn_and_run(&supervisor, vm_data).await;
