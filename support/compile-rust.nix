@@ -100,6 +100,7 @@ stdenv.mkDerivation (
 				rust-pkg
 				zig
 				pkgs.glibc
+				pkgs.libllvm
 			];
 
 		buildInputs =

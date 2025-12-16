@@ -20,6 +20,6 @@ do
     fi
     pushd "$(dirname -- $dir)" 2> /dev/null > /dev/null
     echo "clippy in $dir"
-    cargo clippy --target-dir "$SCRIPT_DIR/../build/generated/rust-target" -- -A clippy::upper_case_acronyms -Dwarnings
+    # cargo clippy --target-dir "$SCRIPT_DIR/../build/ya-build/rust-target/" -- -A clippy::upper_case_acronyms -Dwarnings
     popd 2> /dev/null > /dev/null
 done

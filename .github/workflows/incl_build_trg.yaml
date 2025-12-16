@@ -44,6 +44,7 @@ jobs:
       actions: read
     outputs:
       artifact_url: ${{ steps.upload.outputs.gcs_url }}
+      secondary_artifact_url: ${{ steps.upload.outputs.secondary_gcs_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -98,6 +99,9 @@ jobs:
             SECONDARY_BASE_NAME="genvm-${{ inputs.secondary_target }}.tar.xz"
             echo "secondary_basename=$SECONDARY_BASE_NAME" >> $GITHUB_OUTPUT
             echo "secondary_gcs_url=https://storage.googleapis.com/$GCS_BUCKET/$DIR_NAME/$SECONDARY_BASE_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "secondary_basename=" >> $GITHUB_OUTPUT
+            echo "secondary_gcs_url=" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload to GCS
