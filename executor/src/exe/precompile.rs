@@ -30,11 +30,13 @@ fn compile_single_file_single_mode(
 
     log_info!(engine = engine_type, runner:? = runner_path, runner_path:? = path_in_runner, duration:? = time_start.elapsed();  "wasm compilation done");
 
-    std::fs::create_dir_all(result_path.parent().unwrap())?;
+    std::fs::create_dir_all(result_path.parent().unwrap())
+        .with_context(|| format!("creating directory for {result_path:?}"))?;
 
     let sz = precompiled.len();
 
-    std::fs::write(result_path, precompiled)?;
+    std::fs::write(result_path, precompiled)
+        .with_context(|| format!("writing to {result_path:?}"))?;
 
     log_info!("size" = sz, result:? = result_path, engine = engine_type, runner:? = runner_path, runner_path:? = path_in_runner, duration:? = time_start.elapsed(); "wasm writing done");
 
@@ -122,7 +124,9 @@ pub fn handle(args: Args, config: config::Config) -> Result<()> {
         Ok(())
     })?;
 
-    let all_json = std::fs::read_to_string(registry_dir.join("all.json"))?;
+    let all_json_path = registry_dir.join("all.json");
+    let all_json = std::fs::read_to_string(&all_json_path)
+        .with_context(|| format!("reading {all_json_path:?}"))?;
     let all: BTreeMap<String, Vec<String>> = serde_json::from_str(&all_json)?;
 
     let runners_dir = std::path::Path::new(&config.runners_dir);

@@ -67,15 +67,15 @@ jobs:
         run: |
           ./support/ci/pipelines/build.sh \
             --target ${{ inputs.target }} \
-            --executor-version ${{ inputs.executor_version }} \
-            $(if [ "${{ inputs.bundle_extra }}" != "" ]; then echo "--extra-bundle extra.tar"; fi)
+            --executor-version ${{ inputs.executor_version }}
 
       - name: Build Secondary
         if: ${{ inputs.secondary_target != '' }}
         run: |
           ./support/ci/pipelines/build.sh \
             --target ${{ inputs.secondary_target }} \
-            --executor-version ${{ inputs.executor_version }}
+            --executor-version ${{ inputs.executor_version }} \
+            $(if [ "${{ inputs.bundle_extra }}" != "" ]; then echo "--extra-bundle extra.tar"; fi)
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2

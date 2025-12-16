@@ -61,6 +61,7 @@ HEAD_REVISION=$(git rev-parse HEAD)
 echo "\$TARGET = $TARGET"
 echo "\$HEAD_REVISION = $HEAD_REVISION"
 echo "\$EXECUTOR_VERSION = $EXECUTOR_VERSION"
+echo "\$EXTRA_BUNDLE = $EXTRA_BUNDLE"
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 source "$SCRIPT_DIR/_common.sh"
@@ -79,7 +80,13 @@ nix build -o build/out-$TARGET -v -L .#all-for-platform.$TARGET --show-trace
 PREV=$(readlink -f .)
 pushd build/out-$TARGET
 find . -type f -print0 | sort -z | \
-	xargs -0 tar --transform 's,^\./,,' --mode=ug+w -cf - | \
-	cat - $(if [ "$EXTRA_BUNDLE" != "" ]; then echo "$EXTRA_BUNDLE"; fi) | \
-	xz -9 > "$PREV/build/genvm-$TARGET.tar.xz"
+	xargs -0 tar --transform 's,^\./,,' --mode=ug+w -cf "$PREV/build/genvm-$TARGET.tar"
+
+if [ "$EXTRA_BUNDLE" != "" ]
+then
+	tar -A -f "$PREV/build/genvm-$TARGET.tar" "$EXTRA_BUNDLE"
+fi
+
+xz -z -9 "$PREV/build/genvm-$TARGET.tar"
+
 popd
