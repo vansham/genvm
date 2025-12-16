@@ -14,6 +14,7 @@ pub struct Internal {
 
     pub max_tokens: u32,
     pub use_max_completion_tokens: bool,
+    pub seed: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]

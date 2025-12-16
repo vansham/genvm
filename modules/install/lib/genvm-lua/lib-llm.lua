@@ -9,6 +9,7 @@ local lib = require('lib-genvm')
 ---@field images userdata[]
 ---@field max_tokens integer
 ---@field use_max_completion_tokens boolean
+---@field seed integer | nil
 
 ---@alias Format "text" | "json" | "bool"
 

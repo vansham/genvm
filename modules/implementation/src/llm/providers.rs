@@ -160,6 +160,13 @@ impl Provider for OpenAICompatible {
             "temperature": prompt.temperature,
         });
 
+        if let Some(seed) = prompt.seed {
+            request
+                .as_object_mut()
+                .unwrap()
+                .insert("seed".to_owned(), seed.into());
+        }
+
         if prompt.use_max_completion_tokens {
             request
                 .as_object_mut()
@@ -211,6 +218,13 @@ impl Provider for OpenAICompatible {
             "response_format": {"type": "json_object"},
         });
 
+        if let Some(seed) = prompt.seed {
+            request
+                .as_object_mut()
+                .unwrap()
+                .insert("seed".to_owned(), seed.into());
+        }
+
         if prompt.use_max_completion_tokens {
             request
                 .as_object_mut()
@@ -255,14 +269,23 @@ impl Provider for OpenAICompatible {
 
 impl prompt::Internal {
     fn to_ollama_no_format(&self, model: &str) -> serde_json::Value {
+        let mut options = serde_json::json!({
+            "temperature": self.temperature,
+            "num_predict": self.max_tokens,
+        });
+
+        if let Some(seed) = self.seed {
+            options
+                .as_object_mut()
+                .unwrap()
+                .insert("seed".to_owned(), seed.into());
+        }
+
         let mut request = serde_json::json!({
             "model": model,
             "prompt": self.user_message,
             "stream": false,
-            "options": {
-                "temperature": self.temperature,
-                "num_predict": self.max_tokens,
-            },
+            "options": options,
         });
 
         let mut images = Vec::new();
@@ -824,6 +847,7 @@ mod tests {
                     images: Vec::new(),
                     max_tokens: 500,
                     use_max_completion_tokens: true,
+                    seed: Some(42),
                 },
                 backend.script_config.models.first_key_value().unwrap().0,
             )
@@ -908,6 +932,7 @@ mod tests {
                     images: Vec::new(),
                     max_tokens: 50,
                     use_max_completion_tokens: true,
+                    seed: Some(123),
                 },
                 backend.script_config.models.first_key_value().unwrap().0,
             )
@@ -986,6 +1011,7 @@ mod tests {
                     images: Vec::new(),
                     max_tokens: 500,
                     use_max_completion_tokens: true,
+                    seed: Some(456),
                 },
                 backend.script_config.models.first_key_value().unwrap().0,
             )
@@ -1082,6 +1108,7 @@ mod tests {
                     images: Vec::new(),
                     max_tokens: 50,
                     use_max_completion_tokens: true,
+                    seed: Some(789),
                 },
                 backend.script_config.models.first_key_value().unwrap().0,
             )
