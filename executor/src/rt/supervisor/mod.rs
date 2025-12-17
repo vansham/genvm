@@ -336,18 +336,6 @@ pub async fn apply_contract_actions(
             rt::errors::VMError::wrap(public_abi::VmError::InvalidContract.value().to_owned(), e)
         })?;
 
-    let version = arch.get_version().map_err(|e| {
-        rt::errors::VMError::wrap(public_abi::VmError::InvalidContract.value().to_owned(), e)
-    })?;
-
-    vm.vm_base
-        .store
-        .data_mut()
-        .genlayer_ctx_mut()
-        .genlayer_sdk
-        .data
-        .version = version;
-
     let actions = arch.get_actions().await.map_err(|e| {
         rt::errors::VMError::wrap(public_abi::VmError::InvalidContract.value().to_owned(), e)
     })?;

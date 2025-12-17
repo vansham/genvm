@@ -111,8 +111,8 @@ pub struct SingleVMData {
     pub message_data: ExtendedMessage,
     pub supervisor: Arc<rt::supervisor::Supervisor>,
     pub storage: rt::vm::storage::Storage<StorageHostHolder>,
-    pub version: genvm_common::version::Version,
     pub should_capture_fp: Arc<std::sync::atomic::AtomicBool>,
+    pub events: Vec<Vec<bytes::Bytes>>,
 }
 
 pub struct Context {
@@ -354,20 +354,6 @@ fn file_fd_none() -> generated::types::Fd {
     generated::types::Fd::from(NO_FILE)
 }
 
-impl ContextVFS<'_> {
-    fn check_version(
-        &mut self,
-        lower_bound: genvm_common::version::Version,
-    ) -> Result<(), generated::types::Error> {
-        if self.context.data.version >= lower_bound {
-            Ok(())
-        } else {
-            log_warn!(lower_bound = lower_bound, vm_version = self.context.data.version; "version check failed");
-            Err(generated::types::Errno::Inval.into())
-        }
-    }
-}
-
 #[allow(unused_variables)]
 #[async_trait::async_trait]
 impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
@@ -532,8 +518,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                         ),
                     ),
                     supervisor: supervisor.clone(),
-                    version: genvm_common::version::Version::ZERO,
                     should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    events: Vec::new(),
                 };
 
                 let res = self
@@ -545,8 +531,6 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                 self.set_vm_run_result(res).map(|x| x.0)
             }
             gl_call::Message::EmitEvent { topics, blob } => {
-                self.check_version(genvm_common::version::Version::new(0, 1, 5))?;
-
                 if !self.context.data.conf.is_deterministic {
                     log_warn!("forbidden emit event in deterministic mode");
 
@@ -558,7 +542,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     return Err(generated::types::Errno::Inval.into());
                 }
 
-                let mut real_topics = [[0; 32]; public_abi::EVENT_MAX_TOPICS as usize];
+                let mut real_topics: Vec<bytes::Bytes> =
+                    Vec::with_capacity(public_abi::EVENT_MAX_TOPICS as usize + 1);
 
                 for (i, gl_call::Bytes(t)) in topics.iter().enumerate() {
                     if t.len() != 32 {
@@ -567,7 +552,7 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                         return Err(generated::types::Errno::Inval.into());
                     }
 
-                    real_topics[i].copy_from_slice(t);
+                    real_topics.push(bytes::Bytes::copy_from_slice(t));
                 }
 
                 let blob_data = calldata::encode(&calldata::Value::Map(blob));
@@ -581,12 +566,8 @@ impl generated::genlayer_sdk::GenlayerSdk for ContextVFS<'_> {
                     .consume(size)
                     .map_err(generated::types::Error::trap)?;
 
-                supervisor
-                    .host
-                    .lock()
-                    .await
-                    .post_event(&real_topics[..topics.len()], &blob_data)
-                    .map_err(generated::types::Error::trap)?;
+                real_topics.push(blob_data.into());
+                self.context.data.events.push(real_topics);
 
                 return Ok(file_fd_none());
             }
@@ -1102,7 +1083,6 @@ impl ContextVFS<'_> {
         &mut self,
         msg: gl_call::TracePayload,
     ) -> Result<generated::types::Fd, generated::types::Error> {
-        self.check_version(genvm_common::version::Version::new(0, 1, 10))?;
         match msg {
             gl_call::TracePayload::Message(text) => {
                 let now = std::time::Instant::now();
@@ -1217,10 +1197,10 @@ impl ContextVFS<'_> {
                     state_mode: public_abi::StorageType::Default,
                 },
                 message_data,
-                version: self.context.data.version,
                 supervisor: supervisor.clone(),
                 should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 storage: storage_checkpoint,
+                events: Vec::new(),
             };
 
             let task_done = Arc::new(tokio::sync::Notify::new());
@@ -1290,9 +1270,9 @@ impl ContextVFS<'_> {
             },
             message_data,
             supervisor: supervisor.clone(),
-            version: genvm_common::version::Version::ZERO,
             should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             storage: storage_checkpoint,
+            events: Vec::new(),
         };
 
         let my_res = self.context.spawn_and_run(&supervisor, vm_data).await;

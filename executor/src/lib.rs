@@ -135,10 +135,10 @@ pub async fn run_with_impl(
             entry_stage_data: calldata::Value::Null,
         },
         supervisor: supervisor.clone(),
-        version: genvm_common::version::Version::ZERO,
         should_capture_fp: Arc::new(std::sync::atomic::AtomicBool::new(true)),
 
         storage: topmost_storage,
+        events: Vec::new(),
     };
 
     let limiter = supervisor
@@ -170,6 +170,7 @@ pub async fn run_with_impl(
                         rt::vm::RunOk::VMError(msg, _) => calldata::Value::Str(msg),
                     },
                     storage_changes: Vec::new(),
+                    events: Vec::new(),
                 }),
             };
         }
@@ -191,6 +192,7 @@ pub async fn run_with_impl(
             rt::vm::RunOk::VMError(msg, _) => calldata::Value::Str(msg),
         },
         storage_changes: run_result.vm_data.storage.make_delta(),
+        events: run_result.vm_data.events,
     })
 }
 
@@ -232,6 +234,7 @@ pub async fn run_with(
                     kind: public_abi::ResultCode::VmError,
                     data: calldata::Value::Str(public_abi::VmError::Timeout.value().into()),
                     storage_changes: Vec::new(),
+                    events: Vec::new(),
                 },
                 None,
             )),

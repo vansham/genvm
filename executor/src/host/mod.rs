@@ -277,6 +277,7 @@ impl Host {
                     data: calldata::Value::Str(format!("{e:?}")),
                     fingerprint: None,
                     storage_changes: Vec::new(),
+                    events: Vec::new(),
                 };
                 let as_value = calldata::to_value(&fake_res)?;
                 calldata::encode_to(&mut encoded, &as_value);
@@ -464,26 +465,6 @@ impl Host {
         let mut buf: [u8; 8] = [0; 8];
         sock.read_exact(&mut buf)?;
         Ok(u64::from_le_bytes(buf))
-    }
-
-    pub fn post_event(&mut self, topics: &[[u8; 32]], blob: &[u8]) -> Result<()> {
-        log_trace!("post_event");
-
-        let mut sock = self.lock_sock();
-        sock.write_all(&[host_fns::Methods::PostEvent as u8])?;
-        sock.write_all(&[topics.len() as u8])?;
-
-        for topic in topics {
-            sock.write_all(topic.as_ref())?;
-        }
-
-        write_slice(&mut **sock, blob)?;
-
-        sock.flush()?;
-
-        handle_host_error(&mut **sock)?;
-
-        Ok(())
     }
 
     pub fn notify_nondet_disagreement(&mut self, call_no: u32) -> Result<()> {

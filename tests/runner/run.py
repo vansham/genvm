@@ -568,6 +568,8 @@ class TestRunner:
 						extra_args=['--debug-mode', '--print=result'],
 					)
 				)
+				for evs in res.result_events:
+					mock_host.post_event(evs[:-1], evs[-1])
 				for k, v in res.result_storage_changes:
 					mock_host.storage.write(
 						config['host'].running_address,

@@ -102,8 +102,6 @@ class IHost(metaclass=abc.ABCMeta):
 	@abc.abstractmethod
 	async def remaining_fuel_as_gen(self, /) -> int: ...
 	@abc.abstractmethod
-	async def post_event(self, topics: list[bytes], blob: bytes, /) -> None: ...
-	@abc.abstractmethod
 	async def notify_nondet_disagreement(self, call_no: int, /) -> None: ...
 
 
@@ -323,19 +321,6 @@ async def host_loop(
 					res = min(res, 2**53 - 1)
 					await send_all(bytes([host_fns.Errors.OK]))
 					await send_all(res.to_bytes(8, byteorder='little', signed=False))
-			case host_fns.Methods.POST_EVENT:
-				topics_len = await recv_int(1)
-				topics = []
-				for i in range(topics_len):
-					topic = await read_exact(32)
-					topics.append(topic)
-				blob = await read_slice()
-				try:
-					await handler.post_event(topics, blob)
-				except HostException as e:
-					await send_all(bytes([e.error_code]))
-				else:
-					await send_all(bytes([host_fns.Errors.OK]))
 			case host_fns.Methods.NOTIFY_NONDET_DISAGREEMENT:
 				call_no = await recv_int()
 				await handler.notify_nondet_disagreement(call_no)
@@ -354,6 +339,7 @@ class RunHostAndProgramRes:
 	result_data: typing.Any
 	result_fingerprint: typing.Any
 	result_storage_changes: list[tuple[bytes, bytes]]
+	result_events: list[list[bytes]]
 
 
 async def _send_timeout(manager_uri: str, genvm_id: str, logger: Logger):
@@ -525,12 +511,14 @@ async def run_genvm(
 			result_data = 'no_result'
 			result_fingerprint = None
 			result_storage_changes = []
+			result_events = []
 		else:
 			result_kind = result_host[0]
 			decoded = gvm_calldata.decode(result_host[1])
 			result_data = decoded.get('data')
 			result_fingerprint = decoded.get('fingerprint')
 			result_storage_changes = decoded.get('storage_changes', [])
+			result_events = decoded.get('events', [])
 
 		return RunHostAndProgramRes(
 			stdout=status['stdout'],
@@ -540,6 +528,7 @@ async def run_genvm(
 			result_data=result_data,
 			result_fingerprint=result_fingerprint,
 			result_storage_changes=result_storage_changes,
+			result_events=result_events,
 		)
 
 	raise Exception('Execution failed')

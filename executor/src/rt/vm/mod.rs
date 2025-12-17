@@ -24,6 +24,7 @@ pub struct FullResult {
     pub data: calldata::Value,
     pub fingerprint: Option<rt::errors::Fingerprint>,
     pub storage_changes: Vec<storage::Delta>,
+    pub events: Vec<Vec<bytes::Bytes>>,
 }
 
 impl RunOk {
