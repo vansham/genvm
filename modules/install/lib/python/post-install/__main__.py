@@ -367,9 +367,18 @@ if args.bin_patch:
 if args.bin_check:
 	run_check_command([modules_executable, '--version'])
 
-import yaml
 
-manifest = yaml.safe_load(genvm_root_dir.joinpath('data', 'manifest.yaml').read_text())
+def load_micro_yaml():
+	src = Path(__file__).parent.joinpath('micro_yaml.py')
+	globs = {}
+	code = compile(src.read_text(), str(src), 'exec')
+	exec(code, globs)
+	return globs['loads']
+
+
+manifest = load_micro_yaml()(
+	genvm_root_dir.joinpath('data', 'manifest.yaml').read_text()
+)
 
 
 def _load_registry(file: str | Path) -> dict[str, list[str]]:
@@ -409,21 +418,15 @@ def _download_url(url: str) -> bytes:
 	raise RuntimeError(f'failed to download {url} after multiple attempts')
 
 
-def _download_single(name: str, hash: str) -> bytes:
-	format_vars = {
-		'name': name,
-		'hash': hash,
-		'hash_0_2': hash[:2],
-		'hash_2_': hash[2:],
-	}
-	for url_template in manifest.get('runners_download_urls', []):
-		url = url_template.format(**format_vars)
+def _download_template(descr: str, templates: list[str], vars: dict[str, str]) -> bytes:
+	for url_template in templates:
+		url = url_template.format(**vars)
 		try:
 			logger.info(f'downloading {url}')
 			return _download_url(url)
 		except Exception as e:
 			pass
-	raise RuntimeError(f'failed to download {name}:{hash} from all sources')
+	raise RuntimeError(f'failed to download {descr}{vars} from all sources')
 
 
 def download_runners_from_json(file: str | Path):
@@ -444,7 +447,16 @@ def download_runners_from_json(file: str | Path):
 				cur_dst.unlink()
 
 			logger.debug(f'not found {cur_dst}')
-			data = _download_single(name, hash)
+			data = _download_template(
+				f'runner {name}',
+				manifest.get('runners_download_urls', []),
+				{
+					'name': name,
+					'hash': hash,
+					'hash_0_2': hash[:2],
+					'hash_2_': hash[2:],
+				},
+			)
 			if not runner_check_bytes(data, hash):
 				raise ValueError(f'hash mismatch for {name}:{hash}')
 
@@ -481,8 +493,14 @@ def process_executor_version(executor_version: str):
 		if not executor_executable.exists() and args.executor_download:
 			import lzma
 
-			tar_xz_data = _download_url(
-				f'https://github.com/genlayerlabs/genvm/releases/download/{executor_version}/genvm-{target_os}-{target_arch}-executor.tar.xz'
+			tar_xz_data = _download_template(
+				'executor',
+				manifest.get('executor_download_urls', []),
+				{
+					'executor_version': executor_version,
+					'target_os': args.os,
+					'target_arch': args.arch,
+				},
 			)
 			tar_data = lzma.decompress(tar_xz_data)
 			tarfile.TarFile.open(fileobj=io.BytesIO(tar_data)).extractall(

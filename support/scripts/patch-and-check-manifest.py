@@ -11,7 +11,7 @@ parser.add_argument('file', help='file to process')
 
 args = parser.parse_args()
 
-yaml = YAML(typ='safe')
+yaml = YAML(typ='rt')
 doc = yaml.load(Path(args.file).read_text())
 
 executor_versions = doc['executor_versions']
@@ -30,10 +30,17 @@ def fetch_version_tuple(version_str: str) -> tuple[int, int, int]:
 
 if args.tag not in executor_versions:
 	(major, minor, patch) = fetch_version_tuple(args.tag)
-	if patch == 0:
-		raise ValueError(f'Cannot infer previous version for tag {args.tag}')
-	previous_version = f'v{major}.{minor}.{patch - 1}'
-	executor_versions[args.tag] = executor_versions[previous_version]
+	patched = False
+	for i in range(patch):
+		prev_patch = patch - 1 - i
+		previous_version = f'v{major}.{minor}.{prev_patch}'
+		if previous_version in executor_versions:
+			if not patched:
+				executor_versions[args.tag] = executor_versions[previous_version]
+				patched = True
+			del executor_versions[previous_version]
+	if not patched:
+		raise ValueError(f'Could not find any previous version for tag {args.tag}')
 
 x = list(executor_versions.keys())
 x.sort()
@@ -49,4 +56,6 @@ import io
 res = io.StringIO()
 yaml.dump(doc, res)
 
-Path(args.file).write_text(res.getvalue())
+yaml_val = res.getvalue()
+
+Path(args.file).write_text(yaml_val)
