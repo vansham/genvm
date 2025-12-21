@@ -2,7 +2,7 @@ use std::ops::DerefMut;
 
 use genvm_common::{calldata, sync};
 
-use crate::{rt, SlotID};
+use crate::{host::message::root_offsets, rt, SlotID};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(C)]
@@ -332,5 +332,40 @@ impl<HS: HostStorageLocking + Send + Sync> Storage<HS> {
         }
 
         Ok(())
+    }
+
+    pub async fn write_code(&mut self, code: &[u8]) -> anyhow::Result<()> {
+        let code_slot = SlotID::ZERO.indirection(root_offsets::CODE);
+
+        if code.len() > (u32::MAX - 4) as usize {
+            return Err(rt::errors::VMError::oos(None).into());
+        }
+
+        let code_len = code.len() as u32;
+        let mut len_buf = [0; 4];
+        len_buf.copy_from_slice(&code_len.to_le_bytes());
+        self.write(code_slot, 0, &len_buf).await?;
+        self.write(code_slot, 4, code).await?;
+
+        Ok(())
+    }
+
+    pub async fn read_code(&self, limiter: &rt::memlimiter::Limiter) -> anyhow::Result<Box<[u8]>> {
+        let code_slot = SlotID::ZERO.indirection(root_offsets::CODE);
+
+        let mut len_buf = [0; 4];
+        self.read(code_slot, 0, &mut len_buf).await?;
+        let code_size = u32::from_le_bytes(len_buf);
+
+        if !limiter.consume(code_size) {
+            return Err(rt::errors::VMError::oom(None).into());
+        }
+
+        let res = Box::new_uninit_slice(code_size as usize);
+        let mut res = unsafe { res.assume_init() };
+
+        self.read(code_slot, 4, &mut res).await?;
+
+        Ok(res)
     }
 }

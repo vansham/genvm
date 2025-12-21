@@ -13,6 +13,14 @@ impl std::fmt::Debug for Address {
     }
 }
 
+impl arbitrary::Arbitrary<'_> for Address {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<Self> {
+        let mut raw = [0u8; ADDRESS_SIZE];
+        u.fill_buffer(&mut raw)?;
+        Ok(Address(raw))
+    }
+}
+
 impl Address {
     pub const SIZE: u32 = 20;
 

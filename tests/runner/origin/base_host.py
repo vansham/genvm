@@ -60,9 +60,6 @@ class IHost(metaclass=abc.ABCMeta):
 	async def loop_enter(self, cancellation: asyncio.Event) -> socket.socket: ...
 
 	@abc.abstractmethod
-	async def get_calldata(self, /) -> bytes: ...
-
-	@abc.abstractmethod
 	async def storage_read(
 		self,
 		mode: public_abi.StorageType,
@@ -103,34 +100,6 @@ class IHost(metaclass=abc.ABCMeta):
 	async def remaining_fuel_as_gen(self, /) -> int: ...
 	@abc.abstractmethod
 	async def notify_nondet_disagreement(self, call_no: int, /) -> None: ...
-
-
-import datetime
-import base64
-
-
-async def get_pre_deployment_writes(
-	code: bytes, timestamp: datetime.datetime, manager_uri: str
-) -> list[tuple[bytes, int, bytes]]:
-	async with aiohttp.request(
-		'POST',
-		headers={
-			'Deployment-Timestamp': timestamp.astimezone(datetime.UTC).isoformat(
-				timespec='milliseconds'
-			),
-		},
-		url=f'{manager_uri}/contract/pre-deploy-writes',
-		data=code,
-	) as resp:
-		if resp.status != 200:
-			raise Exception(f'pre-deploy-writes failed: {resp.status} {await resp.text()}')
-		body = await resp.json()
-		ret = []
-		for k, v in body['writes']:
-			k = bytes(base64.b64decode(k))
-			v = bytes(base64.b64decode(v))
-			ret.append((k[:32], int.from_bytes(k[32:], byteorder='little'), v))
-		return ret
 
 
 async def host_loop(
@@ -183,15 +152,6 @@ async def host_loop(
 
 		handling_start = time.time()
 		match meth_id:
-			case host_fns.Methods.GET_CALLDATA:
-				try:
-					cd = await handler.get_calldata()
-				except HostException as e:
-					await send_all(bytes([e.error_code]))
-				else:
-					await send_all(bytes([host_fns.Errors.OK]))
-					await send_int(len(cd))
-					await send_all(cd)
 			case host_fns.Methods.STORAGE_READ:
 				mode = await read_exact(1)
 				mode = public_abi.StorageType(mode[0])
@@ -370,6 +330,8 @@ async def run_genvm(
 	host: str,
 	extra_args: list[str] = [],
 	storage_pages: int = 10_000_000,
+	code: bytes | None = None,
+	calldata: bytes,
 ) -> RunHostAndProgramRes:
 	if logger is None:
 		logger = NoLogger()
@@ -389,18 +351,22 @@ async def run_genvm(
 			async with aiohttp.request(
 				'POST',
 				f'{manager_uri}/genvm/run',
-				json={
-					'major': 0,  # FIXME
-					'message': message,
-					'is_sync': is_sync,
-					'capture_output': capture_output,
-					'host_data': host_data,
-					'max_execution_minutes': max_exec_mins,  # this parameter is needed to prevent zombie genvms
-					'timestamp': timestamp,
-					'host': host,
-					'extra_args': extra_args,
-					'storage_pages': storage_pages,
-				},
+				data=gvm_calldata.encode(
+					{
+						'major': 0,  # FIXME
+						'message': message,
+						'is_sync': is_sync,
+						'capture_output': capture_output,
+						'host_data': host_data,
+						'max_execution_minutes': max_exec_mins,  # this parameter is needed to prevent zombie genvms
+						'timestamp': timestamp,
+						'host': host,
+						'extra_args': extra_args,
+						'storage_pages': storage_pages,
+						'code': None if code is None else list(code),
+						'calldata': list(calldata),
+					}
+				),
 			) as resp:
 				logger.debug('post /genvm/run', status=resp.status)
 				data = await resp.json()

@@ -351,7 +351,7 @@ pub async fn start_service(
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Request {
     pub major: u32,
-    pub message: serde_json::Value,
+    pub message: genvm_common::domain::MessageData,
     pub is_sync: bool,
     pub capture_output: bool,
     #[serde(default = "default_max_execution_minutes")]
@@ -362,6 +362,8 @@ pub struct Request {
     pub host: String,
     #[serde(default)]
     pub extra_args: Vec<String>,
+    pub calldata: Vec<u8>,
+    pub code: Option<Vec<u8>>,
 }
 
 fn default_max_execution_minutes() -> u64 {
@@ -659,7 +661,7 @@ pub async fn start_genvm(
     let read_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(read_fd) };
     let write_fd = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(write_fd) };
 
-    proc.stdin(std::process::Stdio::null());
+    proc.stdin(std::process::Stdio::piped());
     proc.arg(format!("--log-fd={}", write_fd.as_raw_fd()));
 
     proc.arg("run");
@@ -670,17 +672,20 @@ pub async fn start_genvm(
         proc.arg("--sync");
     }
 
-    proc.arg("--host-data");
-    proc.arg(&req.host_data);
-
     proc.arg("--storage-pages");
     proc.arg(req.storage_pages.to_string());
 
     proc.arg("--host");
     proc.arg(&req.host);
 
-    proc.arg("--message");
-    proc.arg(serde_json::to_string(&req.message)?);
+    let execution_data = genvm_common::domain::ExecutionData {
+        calldata: req.calldata.clone(),
+        message: req.message.clone(),
+        host_data: req.host_data.clone(),
+        code: req.code.clone(),
+    };
+    let execution_data_bytes =
+        genvm_common::calldata::encode(&genvm_common::calldata::to_value(&execution_data)?);
 
     proc.arg(format!("--genvm-id={}", genvm_id.0));
 
@@ -702,8 +707,17 @@ pub async fn start_genvm(
     };
 
     let mut child = proc.spawn()?;
-
     log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0, pid:? = child.id(); "genvm process started");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        tokio::task::spawn(async move {
+            use std::io::Write;
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(&execution_data_bytes).await;
+            std::mem::drop(stdin);
+            log_debug_into!(&LoggerWithId, genvm_id:id = genvm_id.0; "message written");
+        });
+    }
 
     let stdout_stderr_sem = Arc::new(tokio::sync::Semaphore::new(2));
 

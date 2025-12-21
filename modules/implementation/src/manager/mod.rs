@@ -165,25 +165,10 @@ async fn run_http_server(
     let genvm_run_route = unwrap_all_anyhow(
         warp::path!("genvm" / "run")
             .and(warp::post())
-            .and(warp::body::json())
-            .then(move |data| {
-                let ctx = ctx.clone();
-                async move { handlers::handle_genvm_run(ctx, data).await }
-            }),
-    );
-
-    let ctx = app_ctx.clone();
-    let genvm_run_readonly = unwrap_all_anyhow(
-        warp::path!("genvm" / "run" / "readonly")
-            .and(warp::post())
             .and(warp::body::bytes())
-            .and(warp::header::<String>("Deployment-Timestamp"))
-            .then(move |contract_code, deployment_timestamp: String| {
+            .then(move |data: bytes::Bytes| {
                 let ctx = ctx.clone();
-                async move {
-                    handlers::handle_genvm_run_readonly(ctx, contract_code, deployment_timestamp)
-                        .await
-                }
+                async move { handlers::handle_genvm_run(ctx, &*data).await }
             }),
     );
 
@@ -278,21 +263,6 @@ async fn run_http_server(
     ));
 
     let ctx = app_ctx.clone();
-    let make_deployment_storage_writes_route = unwrap_all_anyhow(
-        warp::path!("contract" / "pre-deploy-writes")
-            .and(warp::post())
-            .and(warp::body::bytes())
-            .and(warp::header::<String>("Deployment-Timestamp"))
-            .then(move |code, deployment_timestamp: String| {
-                let ctx = ctx.clone();
-                async move {
-                    handlers::handle_make_deployment_storage_writes(ctx, deployment_timestamp, code)
-                        .await
-                }
-            }),
-    );
-
-    let ctx = app_ctx.clone();
     let llm_check_route = unwrap_all_anyhow(
         warp::path!("llm" / "check")
             .and(warp::post())
@@ -307,7 +277,6 @@ async fn run_http_server(
         .or(start_route)
         .or(stop_route)
         .or(genvm_run_route)
-        .or(genvm_run_readonly)
         .or(contract_detect_version_route)
         .or(set_log_level_route)
         .or(manifest_reload_route)
@@ -316,7 +285,6 @@ async fn run_http_server(
         .or(set_permits_route)
         .or(genvm_shutdown_route)
         .or(genvm_status_route)
-        .or(make_deployment_storage_writes_route)
         .or(llm_check_route);
 
     let routes = routes.recover(|err: warp::reject::Rejection| async move {

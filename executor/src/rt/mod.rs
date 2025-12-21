@@ -44,3 +44,9 @@ pub struct SharedData {
     pub metrics: crate::Metrics,
     pub storage_pages_limit: std::sync::atomic::AtomicU64,
 }
+
+pub fn parse_host_data(
+    zelf: &genvm_common::domain::ExecutionData,
+) -> anyhow::Result<genvm_modules_interfaces::HostData> {
+    serde_json::from_str(&zelf.host_data).map_err(Into::into)
+}

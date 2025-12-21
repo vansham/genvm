@@ -1,5 +1,34 @@
+local msg = import './message.json';
 {
-	run(scriptfilefrom, scriptfileto)::
+	run(scriptfilefrom, scriptfileto, cd)::
+	[
+		{
+			"vars": {
+				"fromAddr": "AQAAAAAAAAAAAAAAAAAAAAAAAAA=",
+				"toAddr": "AwAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			},
+			"code": scriptfileto,
+
+			"message": msg + {
+				"contract_address": "AwAAAAAAAAAAAAAAAAAAAAAAAAA=",
+				is_init: true,
+			},
+
+			"calldata": "{}"
+		},
+		{
+			"vars": {
+				"fromAddr": "AQAAAAAAAAAAAAAAAAAAAAAAAAA=",
+				"toAddr": "AwAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			},
+			"code": scriptfilefrom,
+
+			"message": msg + {
+				is_init: true,
+			},
+
+			"calldata": "{}"
+		},
 		{
 			"vars": {
 				"fromAddr": "AQAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -17,8 +46,9 @@
 				}
 			},
 
-			"message": import './message.json',
+			"message": msg,
 
-			"calldata": "{}"
+			"calldata": cd
 		}
+	]
 }

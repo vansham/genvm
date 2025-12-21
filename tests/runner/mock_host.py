@@ -61,7 +61,6 @@ class MockHost(IHost):
 		self,
 		*,
 		path: str,
-		calldata: bytes,
 		messages_path: Path,
 		storage_path_pre: Path,
 		storage_path_post: Path,
@@ -71,7 +70,6 @@ class MockHost(IHost):
 	):
 		self.running_address = running_address
 		self.path = path
-		self.calldata = calldata
 		self.storage_path_pre = storage_path_pre
 		self.storage_path_post = storage_path_post
 		self.leader_nondet = leader_nondet
@@ -131,9 +129,6 @@ class MockHost(IHost):
 		self.sock_listener.close()
 		self.sock_listener = None
 		return self.sock
-
-	async def get_calldata(self) -> bytes:
-		return self.calldata
 
 	async def storage_read(
 		self, mode: public_abi.StorageType, account: bytes, slot: bytes, index: int, le: int

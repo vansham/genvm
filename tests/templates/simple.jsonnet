@@ -2,17 +2,9 @@
 	run(scriptfile)::
 		{
 			"vars": {},
-			"accounts": {
-				"AQAAAAAAAAAAAAAAAAAAAAAAAAA=": {
-					"code": scriptfile
-				},
-				"AgAAAAAAAAAAAAAAAAAAAAAAAAA=": {
-					"code": null
-				}
-			},
-
+			"code": scriptfile,
 			"message": import './message.json',
 
-			"calldata": "{}"
+			"calldata": "{}",
 		}
 }

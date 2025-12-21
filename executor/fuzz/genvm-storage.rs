@@ -66,7 +66,7 @@ struct MockHostStorageHolder(Arc<tokio::sync::Mutex<MockHostStorage>>);
 impl HostStorageLocking for MockHostStorageHolder {
     type ReturnType<'a> = tokio::sync::MutexGuard<'a, MockHostStorage>;
 
-    async fn lock<'a>(&'a self) -> Self::ReturnType<'a> {
+    async fn lock(&self) -> Self::ReturnType<'_> {
         self.0.lock().await
     }
 }

@@ -14,7 +14,7 @@ use core::str;
 use anyhow::{Context, Result};
 
 use crate::{calldata, rt};
-pub use message::{MessageData, SlotID};
+pub use message::SlotID;
 
 pub trait Sock: std::io::Read + std::io::Write + Send + Sync {}
 
@@ -205,30 +205,6 @@ impl Host {
         }
 
         self.get_locked_slots(contract_address, limiter)
-    }
-
-    pub fn get_code(
-        &mut self,
-        mode: StorageType,
-        account: calldata::Address,
-        limiter: &rt::memlimiter::Limiter,
-    ) -> Result<Box<[u8]>> {
-        let code_slot = SlotID::ZERO.indirection(root_offsets::CODE);
-
-        let mut len_buf = [0; 4];
-        self.storage_read(mode, account, code_slot, 0, &mut len_buf)?;
-        let code_size = u32::from_le_bytes(len_buf);
-
-        if !limiter.consume(code_size) {
-            return Err(rt::errors::VMError::oom(None).into());
-        }
-
-        let res = Box::new_uninit_slice(code_size as usize);
-        let mut res = unsafe { res.assume_init() };
-
-        self.storage_read(mode, account, code_slot, 4, &mut res)?;
-
-        Ok(res)
     }
 
     pub fn storage_read(

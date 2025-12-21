@@ -503,9 +503,7 @@ def process_executor_version(executor_version: str):
 				},
 			)
 			tar_data = lzma.decompress(tar_xz_data)
-			tarfile.TarFile.open(fileobj=io.BytesIO(tar_data)).extractall(
-				path=executor_root_dir
-			)
+			tarfile.TarFile.open(fileobj=io.BytesIO(tar_data)).extractall(path=genvm_root_dir)
 		if not executor_executable.exists():
 			if args.error_on_missing_executor:
 				logger.error(f'Executor path {executor_executable} does not exist')

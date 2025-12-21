@@ -11,7 +11,7 @@ pub mod public_abi;
 pub use genvm_common::calldata;
 use genvm_common::*;
 
-pub use host::{Host, MessageData, SlotID};
+pub use host::{Host, SlotID};
 
 use anyhow::Result;
 use wasi::genlayer_sdk::ExtendedMessage;
@@ -31,7 +31,7 @@ pub fn create_supervisor(
     mut host: Host,
     host_data: genvm_modules_interfaces::HostData,
     shared_data: sync::DArc<rt::SharedData>,
-    message: &MessageData,
+    message: &domain::MessageData,
 ) -> Result<Arc<rt::supervisor::Supervisor>> {
     let metrics = shared_data.gep(|x| &x.metrics);
 
@@ -84,29 +84,31 @@ fn log_vm_error(e: &anyhow::Error) {
 }
 
 pub async fn run_with_impl(
-    entry_message: MessageData,
+    entry_data: domain::ExecutionData,
     supervisor: Arc<rt::supervisor::Supervisor>,
     permissions: &str,
 ) -> anyhow::Result<rt::vm::FullResult> {
-    let entrypoint = {
-        let mut entrypoint = Vec::new();
-        supervisor.host.lock().await.get_calldata(&mut entrypoint)?;
-        entrypoint
-    };
-
     let storage_pages_limit = supervisor.get_storage_limiter();
 
-    let topmost_storage = rt::vm::storage::Storage::new(
-        calldata::Address::from(entry_message.contract_address.raw()),
+    let mut topmost_storage = rt::vm::storage::Storage::new(
+        entry_data.message.contract_address,
         storage_pages_limit,
         wasi::genlayer_sdk::StorageHostHolder(
             supervisor.host.clone(),
             wasi::genlayer_sdk::ReadToken {
                 mode: public_abi::StorageType::Default,
-                account: calldata::Address::from(entry_message.contract_address.raw()),
+                account: entry_data.message.contract_address,
             },
         ),
     );
+
+    if let Some(code) = &entry_data.code {
+        log_debug!("using provided code for execution");
+
+        topmost_storage.write_code(code).await?;
+    } else {
+        log_debug!("code is null");
+    }
 
     let essential_data = wasi::genlayer_sdk::SingleVMData {
         conf: wasi::base::Config {
@@ -120,18 +122,18 @@ pub async fn run_with_impl(
             state_mode: crate::public_abi::StorageType::Default,
         },
         message_data: ExtendedMessage {
-            contract_address: calldata::Address::from(entry_message.contract_address.raw()),
-            sender_address: calldata::Address::from(entry_message.sender_address.raw()),
-            origin_address: calldata::Address::from(entry_message.origin_address.raw()),
+            contract_address: entry_data.message.contract_address,
+            sender_address: entry_data.message.sender_address,
+            origin_address: entry_data.message.origin_address,
             stack: Vec::new(),
 
-            chain_id: num_bigint::BigInt::from_str(&entry_message.chain_id).unwrap(),
-            value: entry_message.value.unwrap_or(0).into(),
-            is_init: entry_message.is_init,
-            datetime: entry_message.datetime,
+            chain_id: num_bigint::BigInt::from_str(&entry_data.message.chain_id).unwrap(),
+            value: entry_data.message.value.unwrap_or(0).into(),
+            is_init: entry_data.message.is_init,
+            datetime: entry_data.message.datetime,
 
             entry_kind: public_abi::EntryKind::Main,
-            entry_data: entrypoint,
+            entry_data: entry_data.calldata,
             entry_stage_data: calldata::Value::Null,
         },
         supervisor: supervisor.clone(),
@@ -197,11 +199,11 @@ pub async fn run_with_impl(
 }
 
 pub async fn run_with(
-    entry_message: MessageData,
+    entry_data: domain::ExecutionData,
     supervisor: Arc<rt::supervisor::Supervisor>,
     permissions: &str,
 ) -> anyhow::Result<(rt::vm::FullResult, Option<u32>)> {
-    let res = run_with_impl(entry_message, supervisor.clone(), permissions).await;
+    let res = run_with_impl(entry_data, supervisor.clone(), permissions).await;
 
     log_debug!("deterministic execution done");
 

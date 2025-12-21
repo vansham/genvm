@@ -420,22 +420,6 @@ class TestRunner:
 
 			return empty_storage
 
-		for addr, account_info in first_conf['accounts'].items():
-			code = account_info.get('code')
-			if code is None:
-				continue
-
-			addr = base64.b64decode(addr)
-			code_path = self._process_code_file(code, seq_tmp_dir)
-			code_bytes = Path(code_path).read_bytes()
-			timestamp = first_conf['message'].get('datetime', '2024-11-26T06:42:42.424242Z')
-			timestamp = datetime.fromisoformat(timestamp)
-			writes = asyncio.run(
-				base_host.get_pre_deployment_writes(code_bytes, timestamp, self.config.manager)
-			)
-			for slot, off, data in writes:
-				base_mock_storage.write(Address(addr), slot, off, data)
-
 		empty_storage = seq_tmp_dir.joinpath('empty-storage.pickle')
 		with open(empty_storage, 'wb') as f:
 			pickle.dump(base_mock_storage, f)
@@ -492,12 +476,6 @@ class TestRunner:
 			pre_storage = seq_tmp_dir.joinpath(str(i - 1), 'storage.pickle')
 		post_storage = my_tmp_dir.joinpath('storage.pickle')
 
-		# Process account code files
-		for acc_val in single_conf['accounts'].values():
-			code_path = acc_val.get('code', None)
-			if code_path is not None:
-				acc_val['code'] = self._process_code_file(code_path, my_tmp_dir)
-
 		# Prepare calldata
 		calldata_bytes = calldata.encode(
 			eval(
@@ -505,6 +483,22 @@ class TestRunner:
 				globals(),
 				single_conf['vars'].copy(),
 			)
+		)
+
+		code_path = single_conf.get('code')
+		code = None
+		if code_path is not None:
+			code_path = self._process_code_file(code_path, my_tmp_dir)
+			code = Path(code_path).read_bytes()
+
+		single_conf['message']['contract_address'] = Address(
+			single_conf['message']['contract_address']
+		)
+		single_conf['message']['sender_address'] = Address(
+			single_conf['message']['sender_address']
+		)
+		single_conf['message']['origin_address'] = Address(
+			single_conf['message']['origin_address']
 		)
 
 		# Set up paths
@@ -517,13 +511,12 @@ class TestRunner:
 		# Create mock host
 		host = MockHost(
 			path=str(mock_sock_path),
-			calldata=calldata_bytes,
 			storage_path_post=post_storage,
 			storage_path_pre=pre_storage,
 			leader_nondet=single_conf.get('leader_nondet', None),
 			messages_path=messages_path,
 			balances={Address(k): v for k, v in single_conf.get('balances', {}).items()},
-			running_address=Address(single_conf['message']['contract_address']),
+			running_address=single_conf['message']['contract_address'],
 		)
 
 		mock_host_path = my_tmp_dir.joinpath('mock-host.pickle')
@@ -541,6 +534,8 @@ class TestRunner:
 			'expected_messages_path': jsonnet_path.with_suffix(f'{suff}.msgs'),
 			'deadline': single_conf.get('deadline', 10 * 60),  # 10 minutes
 			'test_name': my_debug_path,
+			'code': code,
+			'calldata': calldata_bytes,
 		}
 
 	def _execute_test_step(self, config: dict) -> None:
@@ -554,6 +549,7 @@ class TestRunner:
 		with config['host'] as mock_host:
 			time_start = time.monotonic()
 			try:
+				code = config['code']
 				res = asyncio.run(
 					base_host.run_genvm(
 						mock_host,
@@ -566,6 +562,8 @@ class TestRunner:
 						logger=logger,
 						host='unix://' + config['host'].path,
 						extra_args=['--debug-mode', '--print=result'],
+						code=code,
+						calldata=config['calldata'],
 					)
 				)
 				for evs in res.result_events:

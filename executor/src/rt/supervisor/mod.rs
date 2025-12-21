@@ -321,11 +321,16 @@ pub async fn apply_contract_actions(
         .get_or_create(
             contract_id,
             || async {
-                let code = zelf.host.lock().await.get_code(
-                    vm.vm_base.config_copy.state_mode,
-                    contract_address,
-                    &limiter,
-                )?;
+                let code = vm
+                    .vm_base
+                    .store
+                    .data()
+                    .genlayer_ctx
+                    .genlayer_sdk
+                    .data
+                    .storage
+                    .read_code(&limiter)
+                    .await?;
 
                 runners::parse(util::SharedBytes::new(code))
             },

@@ -16,13 +16,15 @@ local s = simple.run('${jsonnetDir}/code.py');
             {
                 "method": "try_modify",
             }
-        |||
+        |||,
+        code: null,
     },
     s {
         "calldata": |||
             {
                 "method": "nop",
             }
-        |||
+        |||,
+        code: null,
     }
 ]

@@ -1,4 +1,7 @@
-use std::io::Write;
+use std::{
+    io::{Read, Write},
+    os::fd::FromRawFd,
+};
 
 use genvm_common::*;
 
@@ -48,8 +51,7 @@ macro_rules! combine {
     }};
 }
 
-const MESSAGE_SCHEMA: &str = include_str!("../../../doc/schemas/message.json");
-const MESSAGE_SCHEMA_HELP: &str = combine!("message, follows schema:\n", MESSAGE_SCHEMA);
+const EXECUTION_DATA_HELP: &str = "path to file containing encoded execution data (use '-' for stdin, 'fd://N' for file descriptor N)";
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -59,8 +61,8 @@ pub struct Args {
     )]
     debug_mode: bool,
 
-    #[arg(long, help = MESSAGE_SCHEMA_HELP)]
-    message: String,
+    #[arg(long, default_value = "-", help = EXECUTION_DATA_HELP)]
+    execution_data: String,
     #[arg(long, help = "host uri, preferably unix://")]
     host: String,
     #[arg(long, help = "id to pass to modules, useful for aggregating logs")]
@@ -77,13 +79,29 @@ pub struct Args {
         help = "r?w?s?c?n?, read/write/send messages/call contracts/spawn nondet"
     )]
     permissions: String,
-
-    #[clap(long, default_value = "{}", help = "value to pass to modules")]
-    host_data: String,
 }
 
 pub fn handle(args: Args, config: config::Config) -> Result<()> {
-    let message: genvm::MessageData = serde_json::from_str(&args.message)?;
+    // Read execution data from file path, stdin, or file descriptor
+    let execution_data_bytes = if args.execution_data == "-" {
+        let mut buffer = Vec::new();
+        std::io::stdin().read_to_end(&mut buffer)?;
+        buffer
+    } else if let Some(fd_str) = args.execution_data.strip_prefix("fd://") {
+        let fd: i32 = fd_str.parse().context("invalid file descriptor number")?;
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        std::mem::drop(file);
+        buffer
+    } else {
+        std::fs::read(&args.execution_data)?
+    };
+
+    let execution_data = calldata::decode(&execution_data_bytes)?;
+    let execution_data = calldata::from_value::<domain::ExecutionData>(execution_data)?;
+    let message = &execution_data.message;
+    let host_data = rt::parse_host_data(&execution_data)?;
 
     let runtime = config.base.create_rt()?;
 
@@ -129,20 +147,18 @@ pub fn handle(args: Args, config: config::Config) -> Result<()> {
         anyhow::bail!("Invalid permissions {}", &args.permissions)
     }
 
-    let host_data = serde_json::from_str(&args.host_data)?;
-
     log_info!(genvm_id = genvm_id; "genvm id");
 
     let rt = runtime.enter();
 
-    let supervisor = genvm::create_supervisor(&config, host, host_data, shared_data, &message)
+    let supervisor = genvm::create_supervisor(&config, host, host_data, shared_data, message)
         .with_context(|| "creating supervisor")?;
 
     std::mem::drop(rt);
 
     let res = runtime
         .block_on(genvm::run_with(
-            message,
+            execution_data,
             supervisor.clone(),
             &args.permissions,
         ))

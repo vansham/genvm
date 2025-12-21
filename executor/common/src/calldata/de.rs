@@ -578,7 +578,10 @@ impl<'de> serde::Deserializer<'de> for Value {
             Err(value) => value,
         };
         match value {
-            Value::Address(_a) => Err(Error(anyhow::anyhow!("unexpected address"))),
+            Value::Address(_a) => Err(Error(anyhow::anyhow!(
+                "unexpected address for {}",
+                std::any::type_name::<V::Value>()
+            ))),
             Value::Null => visitor.visit_unit(),
             Value::Bool(v) => visitor.visit_bool(v),
             Value::Number(n) => visit_bigint(n, visitor),
