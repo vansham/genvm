@@ -363,8 +363,8 @@ async def run_genvm(
 						'host': host,
 						'extra_args': extra_args,
 						'storage_pages': storage_pages,
-						'code': None if code is None else list(code),
-						'calldata': list(calldata),
+						'code': code,
+						'calldata': calldata,
 					}
 				),
 			) as resp:

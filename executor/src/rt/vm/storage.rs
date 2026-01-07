@@ -12,8 +12,18 @@ impl PageID {
     pub fn to_bytes(&self) -> [u8; 36] {
         let mut res = [0u8; 36];
         res[..32].copy_from_slice(&self.0.raw());
-        res[32..].copy_from_slice(&self.1.to_le_bytes());
+        res[32..].copy_from_slice(&self.1.to_be_bytes());
         res
+    }
+
+    pub fn from_bytes(data: [u8; 36]) -> Self {
+        let mut slot_bytes = [0u8; 32];
+        slot_bytes.copy_from_slice(&data[..32]);
+        let slot_id = SlotID::from_bytes(slot_bytes);
+        let mut index_bytes = [0u8; 4];
+        index_bytes.copy_from_slice(&data[32..]);
+        let index = u32::from_be_bytes(index_bytes);
+        Self(slot_id, index)
     }
 }
 
@@ -367,5 +377,32 @@ impl<HS: HostStorageLocking + Send + Sync> Storage<HS> {
         self.read(code_slot, 4, &mut res).await?;
 
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pages_sorted_correctly_1_byte() {
+        let left = PageID(SlotID::from_bytes([1u8; 32]), 5);
+        let right = PageID(SlotID::from_bytes([1u8; 32]), 10);
+        assert!(left < right);
+        assert!(left.to_bytes() < right.to_bytes());
+
+        assert!(right > left);
+        assert!(right.to_bytes() > left.to_bytes());
+    }
+
+    #[test]
+    fn pages_sorted_correctly_2_byte() {
+        let left = PageID(SlotID::from_bytes([1u8; 32]), 5);
+        let right = PageID(SlotID::from_bytes([1u8; 32]), 1024);
+        assert!(left < right);
+        assert!(left.to_bytes() < right.to_bytes());
+
+        assert!(right > left);
+        assert!(right.to_bytes() > left.to_bytes());
     }
 }

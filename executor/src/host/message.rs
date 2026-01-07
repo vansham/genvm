@@ -61,6 +61,10 @@ impl SlotID {
         ret.0.copy_from_slice(digest.finalize().as_slice());
         ret
     }
+
+    pub fn from_bytes(data: [u8; 32]) -> Self {
+        SlotID(data)
+    }
 }
 
 impl From<[u8; 32]> for SlotID {

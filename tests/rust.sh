@@ -110,8 +110,6 @@ export AFL_FUZZER_LOOPCOUNT=20 # without it no coverage will be written!
 export AFL_NO_CFG_FUZZING=1
 export AFL_BENCH_UNTIL_CRASH=1
 
-LLVM_TOOLS_BIN="$(rustc --print target-libdir)/../bin"
-
 PROFILE_FILES=""
 
 FUZZ_HELP_SHOWN=false
@@ -240,6 +238,8 @@ fi
 if [ "$COVERAGE" == "true" ]
 then
     find "$COVERAGE_DIR" -name '*.profraw' > "$COVERAGE_DIR/files-list"
+    LLVM_TOOLS_BIN="$(rustc --print target-libdir)/../bin"
+
 
     if [ -f "$LLVM_TOOLS_BIN/llvm-profdata" ]
     then

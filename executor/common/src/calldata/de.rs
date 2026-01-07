@@ -725,6 +725,7 @@ impl<'de> serde::Deserializer<'de> for Value {
     {
         match self {
             Value::Array(v) => visit_array(v, visitor),
+            Value::Bytes(v) => visitor.visit_byte_buf(v),
             _ => Err(self.invalid_type(&visitor)),
         }
     }

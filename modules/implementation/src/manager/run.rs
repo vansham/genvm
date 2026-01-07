@@ -348,6 +348,9 @@ pub async fn start_service(
     Ok(())
 }
 
+use serde_with::serde_as;
+
+#[serde_as]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Request {
     pub major: u32,
@@ -362,7 +365,9 @@ pub struct Request {
     pub host: String,
     #[serde(default)]
     pub extra_args: Vec<String>,
+    #[serde_as(as = "serde_with::Bytes")]
     pub calldata: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     pub code: Option<Vec<u8>>,
 }
 

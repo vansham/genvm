@@ -96,7 +96,7 @@ pub async fn run_with_impl(
         wasi::genlayer_sdk::StorageHostHolder(
             supervisor.host.clone(),
             wasi::genlayer_sdk::ReadToken {
-                mode: public_abi::StorageType::Default,
+                mode: public_abi::StorageType::LatestNonFinal,
                 account: entry_data.message.contract_address,
             },
         ),
