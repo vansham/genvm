@@ -40,6 +40,10 @@ pub fn create_supervisor(
     shared_data: sync::DArc<rt::SharedData>,
     message: &domain::MessageData,
 ) -> Result<Arc<rt::supervisor::Supervisor>> {
+    // --- ADDED CONFIG VALIDATION ---
+    config.validate()?;
+    // -------------------------------
+
     let metrics = shared_data.gep(|x| &x.metrics);
 
     let modules = modules::All {
