@@ -192,14 +192,18 @@ pub async fn run_with_impl(
 
     let run_result = vm.run().await?;
 
-    // --- LOG PERFORMANCE METRICS ---
+    // --- LOG PERFORMANCE METRICS AND POPULATE SHARED DATA ---
     let exec_duration = start_instant.elapsed().as_micros();
+    
+    // This fixes the issue where the field was never populated
+    supervisor.shared_data.metrics.gep_mut(|m| m.execution_time_us = exec_duration);
+
     log_info!(
         contract = %entry_data.message.contract_address,
         duration_us = %exec_duration;
         "Intelligent Contract execution performance trace"
     );
-    // -------------------------------
+    // -------------------------------------------------------
 
     Ok(rt::vm::FullResult {
         fingerprint: run_result.fingerprint,
