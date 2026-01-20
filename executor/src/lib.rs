@@ -16,6 +16,10 @@ pub use host::{Host, SlotID};
 use anyhow::Result;
 use wasi::genlayer_sdk::ExtendedMessage;
 
+// --- ADDED THIS FOR PERFORMANCE TRACING ---
+use std::time::Instant;
+// ------------------------------------------
+
 use std::{str::FromStr, sync::Arc};
 
 #[derive(Default, Debug, serde::Serialize)]
@@ -24,6 +28,9 @@ pub struct Metrics {
     pub host: host::Metrics,
     pub web_module: modules::Metrics,
     pub llm_module: modules::Metrics,
+    // --- ADDED FIELD FOR EXECUTION TIME ---
+    pub execution_time_us: u128, 
+    // --------------------------------------
 }
 
 pub fn create_supervisor(
@@ -88,6 +95,10 @@ pub async fn run_with_impl(
     supervisor: Arc<rt::supervisor::Supervisor>,
     permissions: &str,
 ) -> anyhow::Result<rt::vm::FullResult> {
+    // --- START EXECUTION TIMER ---
+    let start_instant = Instant::now();
+    // -----------------------------
+
     let storage_pages_limit = supervisor.get_storage_limiter();
 
     let mut topmost_storage = rt::vm::storage::Storage::new(
@@ -180,6 +191,15 @@ pub async fn run_with_impl(
     };
 
     let run_result = vm.run().await?;
+
+    // --- LOG PERFORMANCE METRICS ---
+    let exec_duration = start_instant.elapsed().as_micros();
+    log_info!(
+        contract = %entry_data.message.contract_address,
+        duration_us = %exec_duration;
+        "Intelligent Contract execution performance trace"
+    );
+    // -------------------------------
 
     Ok(rt::vm::FullResult {
         fingerprint: run_result.fingerprint,
