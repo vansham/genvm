@@ -5,6 +5,99 @@ use genvm_common::*;
 
 use super::{config, prompt};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokensSanityError {
+    ZeroTotal,
+    TotalLessThanParts { total: u32, input: u32, output: u32 },
+}
+
+impl std::fmt::Display for TokensSanityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokensSanityError::ZeroTotal => write!(f, "total tokens is zero"),
+            TokensSanityError::TotalLessThanParts {
+                total,
+                input,
+                output,
+            } => {
+                write!(f, "total ({total}) < input ({input}) + output ({output})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TokensSanityError {}
+
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsage {
+    pub input: Option<u32>,
+    pub output: Option<u32>,
+    pub total: Option<u32>,
+}
+
+impl TokenUsage {
+    pub fn new(input: Option<u32>, output: Option<u32>, total: Option<u32>) -> Self {
+        Self {
+            input,
+            output,
+            total,
+        }
+    }
+
+    pub fn from_input_output(input: u32, output: u32) -> Self {
+        Self {
+            input: Some(input),
+            output: Some(output),
+            total: Some(input + output),
+        }
+    }
+
+    pub fn from_total(total: u32) -> Self {
+        Self {
+            input: None,
+            output: None,
+            total: Some(total),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn sanity_check(&self) -> Result<(), TokensSanityError> {
+        let total = self.total.unwrap_or_default();
+        if total == 0 {
+            return Err(TokensSanityError::ZeroTotal);
+        }
+        let input = self.input.unwrap_or_default();
+        let output = self.output.unwrap_or_default();
+        if total < input + output {
+            return Err(TokensSanityError::TotalLessThanParts {
+                total,
+                input,
+                output,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderResponse<T> {
+    pub result: T,
+    pub tokens: TokenUsage,
+}
+
+impl<T> ProviderResponse<T> {
+    pub fn new(result: T, tokens: TokenUsage) -> Self {
+        Self { result, tokens }
+    }
+
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> ProviderResponse<U> {
+        ProviderResponse {
+            result: f(self.result),
+            tokens: self.tokens,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Provider {
     async fn exec_prompt_text(
@@ -12,14 +105,14 @@ pub trait Provider {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String>;
+    ) -> ModuleResult<ProviderResponse<String>>;
 
     async fn exec_prompt_json_as_text(
         &self,
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String> {
+    ) -> ModuleResult<ProviderResponse<String>> {
         self.exec_prompt_text(ctx, prompt, model).await
     }
 
@@ -28,12 +121,13 @@ pub trait Provider {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<serde_json::Map<String, serde_json::Value>> {
+    ) -> ModuleResult<ProviderResponse<serde_json::Map<String, serde_json::Value>>> {
         let res = self.exec_prompt_json_as_text(ctx, prompt, model).await?;
-        let res = sanitize_json_str(&res);
-        let res = serde_json::from_str(&res).with_context(|| format!("parsing {res:?}"))?;
+        let json_str = sanitize_json_str(&res.result);
+        let parsed =
+            serde_json::from_str(&json_str).with_context(|| format!("parsing {json_str:?}"))?;
 
-        Ok(res)
+        Ok(ProviderResponse::new(parsed, res.tokens))
     }
 
     async fn exec_prompt_bool_reason(
@@ -41,16 +135,16 @@ pub trait Provider {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<bool> {
-        let result = self.exec_prompt_json(ctx, prompt, model).await?;
-        let res = result.get("result").and_then(|x| x.as_bool());
+    ) -> ModuleResult<ProviderResponse<bool>> {
+        let res = self.exec_prompt_json(ctx, prompt, model).await?;
+        let result_val = res.result.get("result").and_then(|x| x.as_bool());
 
-        if let Some(res) = res {
-            Ok(res)
+        if let Some(val) = result_val {
+            Ok(ProviderResponse::new(val, res.tokens))
         } else {
-            log_error!(result:? = result; "no result in reason, returning false");
+            log_error!(result:? = res.result; "no result in reason, returning false");
 
-            Ok(false)
+            Ok(ProviderResponse::new(false, res.tokens))
         }
     }
 }
@@ -145,6 +239,22 @@ impl prompt::Internal {
     }
 }
 
+fn extract_openai_tokens(body: &serde_json::Value) -> TokenUsage {
+    let input = body
+        .pointer("/usage/prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let output = body
+        .pointer("/usage/completion_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let total = body
+        .pointer("/usage/total_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    TokenUsage::new(input, output, total)
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAICompatible {
     async fn exec_prompt_text(
@@ -152,7 +262,7 @@ impl Provider for OpenAICompatible {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String> {
+    ) -> ModuleResult<ProviderResponse<String>> {
         let mut request = serde_json::json!({
             "model": model,
             "messages": prompt.to_openai_messages()?,
@@ -195,13 +305,15 @@ impl Provider for OpenAICompatible {
         )
         .await?;
 
+        let tokens = extract_openai_tokens(&res.body);
+
         let response = res
             .body
             .pointer("/choices/0/message/content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))?;
 
-        Ok(response.to_owned())
+        Ok(ProviderResponse::new(response.to_owned(), tokens))
     }
 
     async fn exec_prompt_json(
@@ -209,7 +321,7 @@ impl Provider for OpenAICompatible {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<serde_json::Map<String, serde_json::Value>> {
+    ) -> ModuleResult<ProviderResponse<serde_json::Map<String, serde_json::Value>>> {
         let mut request = serde_json::json!({
             "model": model,
             "messages": prompt.to_openai_messages()?,
@@ -253,6 +365,8 @@ impl Provider for OpenAICompatible {
         )
         .await?;
 
+        let tokens = extract_openai_tokens(&res.body);
+
         let response = res
             .body
             .pointer("/choices/0/message/content")
@@ -260,10 +374,10 @@ impl Provider for OpenAICompatible {
             .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))?;
 
         let response = sanitize_json_str(response);
-        let response =
+        let parsed =
             serde_json::from_str(&response).with_context(|| format!("parsing {response:?}"))?;
 
-        Ok(response)
+        Ok(ProviderResponse::new(parsed, tokens))
     }
 }
 
@@ -308,6 +422,22 @@ impl prompt::Internal {
     }
 }
 
+fn extract_ollama_tokens(body: &serde_json::Value) -> TokenUsage {
+    let input = body
+        .get("prompt_eval_count")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let output = body
+        .get("eval_count")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let total = match (input, output) {
+        (Some(i), Some(o)) => Some(i + o),
+        _ => None,
+    };
+    TokenUsage::new(input, output, total)
+}
+
 #[async_trait::async_trait]
 impl Provider for OLlama {
     async fn exec_prompt_text(
@@ -315,7 +445,7 @@ impl Provider for OLlama {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String> {
+    ) -> ModuleResult<ProviderResponse<String>> {
         let request = prompt.to_ollama_no_format(model);
 
         let request = serde_json::to_vec(&request)?;
@@ -329,13 +459,15 @@ impl Provider for OLlama {
         )
         .await?;
 
+        let tokens = extract_ollama_tokens(&res.body);
+
         let response = res
             .body
             .as_object()
             .and_then(|v| v.get("response"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))?;
-        Ok(response.to_owned())
+        Ok(ProviderResponse::new(response.to_owned(), tokens))
     }
 
     async fn exec_prompt_json_as_text(
@@ -343,7 +475,7 @@ impl Provider for OLlama {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String> {
+    ) -> ModuleResult<ProviderResponse<String>> {
         let mut request = prompt.to_ollama_no_format(model);
 
         request
@@ -381,14 +513,32 @@ impl Provider for OLlama {
         )
         .await?;
 
+        let tokens = extract_ollama_tokens(&res.body);
+
         let response = res
             .body
             .as_object()
             .and_then(|v| v.get("response"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))?;
-        Ok(response.to_owned())
+        Ok(ProviderResponse::new(response.to_owned(), tokens))
     }
+}
+
+fn extract_gemini_tokens(body: &serde_json::Value) -> TokenUsage {
+    let input = body
+        .pointer("/usageMetadata/promptTokenCount")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let output = body
+        .pointer("/usageMetadata/candidatesTokenCount")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let total = body
+        .pointer("/usageMetadata/totalTokenCount")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    TokenUsage::new(input, output, total)
 }
 
 #[async_trait::async_trait]
@@ -398,7 +548,7 @@ impl Provider for Gemini {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String> {
+    ) -> ModuleResult<ProviderResponse<String>> {
         let mut request = serde_json::json!({
             "generationConfig": {
                 "responseMimeType": "text/plain",
@@ -427,6 +577,8 @@ impl Provider for Gemini {
         )
         .await?;
 
+        let tokens = extract_gemini_tokens(&res_json.body);
+
         let res = res_json
             .body
             .pointer("/candidates/0/content/parts/0/text")
@@ -439,12 +591,12 @@ impl Provider for Gemini {
                 .and_then(|x| x.as_str())
                 == Some("MAX_TOKENS")
         {
-            return Ok("".into());
+            return Ok(ProviderResponse::new("".into(), tokens));
         }
 
         let res =
             res.ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res_json.body))?;
-        Ok(res.into())
+        Ok(ProviderResponse::new(res.into(), tokens))
     }
 
     async fn exec_prompt_json_as_text(
@@ -452,7 +604,7 @@ impl Provider for Gemini {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String> {
+    ) -> ModuleResult<ProviderResponse<String>> {
         let mut request = serde_json::json!({
             "generationConfig": {
                 "responseMimeType": "application/json",
@@ -481,6 +633,8 @@ impl Provider for Gemini {
         )
         .await?;
 
+        let tokens = extract_gemini_tokens(&res_json.body);
+
         let res = res_json
             .body
             .pointer("/candidates/0/content/parts/0/text")
@@ -493,13 +647,13 @@ impl Provider for Gemini {
                 .and_then(|x| x.as_str())
                 == Some("MAX_TOKENS")
         {
-            return Ok("{}".to_owned());
+            return Ok(ProviderResponse::new("{}".to_owned(), tokens));
         }
 
         let res =
             res.ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res_json.body))?;
 
-        Ok(res.to_owned())
+        Ok(ProviderResponse::new(res.to_owned(), tokens))
     }
 }
 
@@ -537,6 +691,22 @@ impl prompt::Internal {
     }
 }
 
+fn extract_anthropic_tokens(body: &serde_json::Value) -> TokenUsage {
+    let input = body
+        .pointer("/usage/input_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let output = body
+        .pointer("/usage/output_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let total = match (input, output) {
+        (Some(i), Some(o)) => Some(i + o),
+        _ => None,
+    };
+    TokenUsage::new(input, output, total)
+}
+
 #[async_trait::async_trait]
 impl Provider for Anthropic {
     async fn exec_prompt_text(
@@ -544,7 +714,7 @@ impl Provider for Anthropic {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<String> {
+    ) -> ModuleResult<ProviderResponse<String>> {
         let request = prompt.to_anthropic_no_format(model)?;
 
         let request = serde_json::to_vec(&request)?;
@@ -564,11 +734,15 @@ impl Provider for Anthropic {
         )
         .await?;
 
-        res.body
+        let tokens = extract_anthropic_tokens(&res.body);
+
+        let text = res
+            .body
             .pointer("/content/0/text")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))
-            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))?;
+
+        Ok(ProviderResponse::new(String::from(text), tokens))
     }
 
     async fn exec_prompt_json(
@@ -576,7 +750,7 @@ impl Provider for Anthropic {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<serde_json::Map<String, serde_json::Value>> {
+    ) -> ModuleResult<ProviderResponse<serde_json::Map<String, serde_json::Value>>> {
         let mut request = prompt.to_anthropic_no_format(model)?;
 
         request.as_object_mut().unwrap().insert(
@@ -628,13 +802,15 @@ impl Provider for Anthropic {
         )
         .await?;
 
+        let tokens = extract_anthropic_tokens(&res.body);
+
         let val = res
             .body
             .pointer("/content/0/input")
             .and_then(|x| x.as_object())
             .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))?;
 
-        Ok(val.clone())
+        Ok(ProviderResponse::new(val.clone(), tokens))
     }
 
     async fn exec_prompt_bool_reason(
@@ -642,7 +818,7 @@ impl Provider for Anthropic {
         ctx: &scripting::CtxPart,
         prompt: &prompt::Internal,
         model: &str,
-    ) -> ModuleResult<bool> {
+    ) -> ModuleResult<ProviderResponse<bool>> {
         let mut request = serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": prompt.user_message}],
@@ -691,13 +867,15 @@ impl Provider for Anthropic {
         )
         .await?;
 
+        let tokens = extract_anthropic_tokens(&res.body);
+
         let val = res
             .body
             .pointer("/content/0/input/result")
             .and_then(|x| x.as_bool())
             .ok_or_else(|| anyhow::anyhow!("can't get response field {}", &res.body))?;
 
-        Ok(val)
+        Ok(ProviderResponse::new(val, tokens))
     }
 }
 
@@ -864,9 +1042,13 @@ mod tests {
             }
         };
 
-        let res = res.trim().to_lowercase();
+        res.tokens
+            .sanity_check()
+            .expect("tokens sanity check failed");
 
-        assert_eq!(res, "yes");
+        let text = res.result.trim().to_lowercase();
+
+        assert_eq!(text, "yes");
     }
 
     const BIG_PROMPT: &str = r#"
@@ -949,9 +1131,13 @@ mod tests {
             }
         };
 
-        let res = res.trim().to_lowercase();
+        res.tokens
+            .sanity_check()
+            .expect("tokens sanity check failed");
 
-        println!("result is {res}");
+        let text = res.result.trim().to_lowercase();
+
+        println!("result is {text}");
     }
 
     async fn do_test_json(conf: &str) {
@@ -1029,7 +1215,11 @@ mod tests {
             }
         };
 
-        let as_val = serde_json::Value::Object(res);
+        res.tokens
+            .sanity_check()
+            .expect("tokens sanity check failed");
+
+        let as_val = serde_json::Value::Object(res.result);
 
         // all this because of anthropic
         for potential in [
@@ -1042,11 +1232,12 @@ mod tests {
             as_val.pointer("/data/result").and_then(|x| x.as_i64()),
             as_val.pointer("/response/result").and_then(|x| x.as_i64()),
             as_val.pointer("/answer/result").and_then(|x| x.as_i64()),
-        ] {
-            if let Some(v) = potential {
-                assert!((0..=100).contains(&v));
-                return;
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!((0..=100).contains(&potential));
+            return;
         }
         unreachable!("no result found in {as_val:?}");
     }
@@ -1115,7 +1306,7 @@ mod tests {
             .await;
         eprintln!("{res:?}");
 
-        match res {
+        let res = match res {
             Ok(res) => res,
             Err(e) if is_overloaded(&e) => {
                 eprintln!("Overloaded, skipping test: {e}");
@@ -1125,6 +1316,10 @@ mod tests {
                 panic!("test failed: {e}");
             }
         };
+
+        res.tokens
+            .sanity_check()
+            .expect("tokens sanity check failed");
     }
 
     macro_rules! make_test {

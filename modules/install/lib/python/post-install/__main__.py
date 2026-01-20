@@ -170,6 +170,8 @@ logging.info('Starting actual post-install script')
 if args.bin_patch:
 	import lief
 
+	lief.logging.set_level(lief.logging.LEVEL.ERROR)
+
 HASH_VALID_CHARS = '0123456789abcdfghijklmnpqrsvwxyz'
 
 
@@ -430,6 +432,14 @@ def _download_template(descr: str, templates: list[str], vars: dict[str, str]) -
 
 
 def download_runners_from_json(file: str | Path):
+	file = Path(file)
+	if not file.exists():
+		if args.error_on_missing_executor:
+			logger.error(f'Executor path {file} does not exist')
+			raise RuntimeError(f'Executor path {file} does not exist')
+		else:
+			logger.warning(f'Executor path {file} does not exist, skipping')
+			return
 	logger.info(f'checking that all runners are present for {file}')
 	all_runners = _load_registry(file)
 	runners_dir = genvm_root_dir.joinpath('runners')
